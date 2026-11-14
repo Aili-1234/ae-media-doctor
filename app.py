@@ -23,7 +23,12 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 APP_NAME = "AE 素材医生"
-APP_VER = "1.6"
+APP_VER = "1.7"
+
+# 所有子进程（powershell / taskkill / tasklist / es）都不许弹控制台窗口：
+# 否则关窗口时会闪一个蓝色 PowerShell 窗口。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+
 
 
 def cfg_dir():
@@ -513,6 +518,76 @@ def _url_to_path(u):
     u = u.replace("/", "\\")
     return u
 
+def _icon_path():
+    """找窗口图标：程序目录 → 上一级 → ProgramData。"""
+    for p in (os.path.join(app_dir(), "doctor.ico"),
+              os.path.join(os.path.dirname(app_dir()), "doctor.ico"),
+              r"C:\ProgramData\AE-Downgrader\doctor.ico"):
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _win_set_icons(win, ico):
+    """直接用 WM_SETICON 设标题栏/任务栏图标（Tk 的 iconbitmap 在多尺寸 ico 上会静默失败）。"""
+    try:
+        import ctypes
+        from ctypes import wintypes as wt
+    except Exception:
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        user32.LoadImageW.restype = wt.HANDLE
+        user32.LoadImageW.argtypes = [wt.HINSTANCE, wt.LPCWSTR, wt.UINT,
+                                      ctypes.c_int, ctypes.c_int, wt.UINT]
+        LR_LOADFROMFILE, LR_DEFAULTSIZE, IMAGE_ICON = 0x0010, 0x0040, 1
+        WM_SETICON, ICON_SMALL, ICON_BIG = 0x0080, 0, 1
+        try:
+            hwnd = int(win.wm_frame(), 16)
+        except Exception:
+            hwnd = int(win.winfo_id())
+        if not hwnd:
+            return False
+        big = user32.LoadImageW(None, ico, IMAGE_ICON, 0, 0,
+                                LR_LOADFROMFILE | LR_DEFAULTSIZE)
+        small = user32.LoadImageW(None, ico, IMAGE_ICON, 16, 16, LR_LOADFROMFILE)
+        if big:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, big)
+        if small:
+            user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, small)
+        return bool(big or small)
+    except Exception:
+        return False
+
+
+def apply_icon(win):
+    """把医生图标挂到窗口和任务栏：先试 Tk，再用 WM_SETICON 兜底（等窗口真正建出来再设）。"""
+    ico = _icon_path()
+    if not ico:
+        return ""
+    try:
+        win.iconbitmap(ico)
+    except Exception:
+        pass
+    try:
+        win.iconbitmap(default=ico)
+    except Exception:
+        pass
+
+    def later():
+        _win_set_icons(win, ico)
+        try:
+            win.iconbitmap(ico)
+        except Exception:
+            pass
+    try:
+        win.after(120, later)
+        win.after(600, lambda: _win_set_icons(win, ico))
+    except Exception:
+        pass
+    return ico
+
+
 def app_dir():
     """程序所在目录（打包后就是 exe/脚本所在目录）。"""
     f = globals().get("__file__") or ""
@@ -555,7 +630,7 @@ def bundled_pids():
         ps = ("Get-CimInstance Win32_Process -Filter \"Name='everything.exe'\" | "
               "Where-Object { $_.ExecutablePath -eq '%s' } | ForEach-Object { $_.ProcessId }" % exe)
         r = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=20)
+                           capture_output=True, creationflags=_NO_WINDOW, timeout=20)
         out = r.stdout.decode("mbcs", "ignore")
         return [int(x) for x in out.split() if x.strip().isdigit()]
     except Exception:
@@ -568,7 +643,7 @@ def stop_bundled_everything(log=None):
     pids = bundled_pids()
     for pid in pids:
         try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=15)
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, creationflags=_NO_WINDOW, timeout=15)
         except Exception:
             pass
     _BUNDLED_STARTED = False
@@ -580,7 +655,7 @@ def stop_bundled_everything(log=None):
 def everything_running():
     try:
         r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq everything.exe", "/NH"],
-                           capture_output=True, timeout=15)
+                           capture_output=True, creationflags=_NO_WINDOW, timeout=15)
         out = r.stdout.decode("mbcs", "ignore").lower()
         return "everything.exe" in out
     except Exception:
@@ -589,7 +664,7 @@ def everything_running():
 
 def _index_count(es):
     try:
-        r = subprocess.run([es, "-get-result-count"], capture_output=True, timeout=15)
+        r = subprocess.run([es, "-get-result-count"], capture_output=True, creationflags=_NO_WINDOW, timeout=15)
         return int((r.stdout.decode("mbcs", "ignore") or "0").strip() or 0)
     except Exception:
         return 0
@@ -625,7 +700,7 @@ def ensure_everything(log=None):
         try:
             subprocess.run(["powershell", "-NoProfile", "-Command",
                             "Start-Process -FilePath '%s' -ArgumentList '-startup','-minimized' -Verb RunAs"
-                            % exe], capture_output=True, timeout=30)
+                            % exe], capture_output=True, creationflags=_NO_WINDOW, timeout=30)
             _BUNDLED_STARTED = True
         except Exception:
             pass
@@ -648,7 +723,7 @@ def index_lookup(names, timeout_per=20):
     if es:
         for n in names:
             try:
-                r = subprocess.run([es, "-n", "20", "-a", n], capture_output=True,
+                r = subprocess.run([es, "-n", "20", "-a", n], capture_output=True, creationflags=_NO_WINDOW,
                                    timeout=timeout_per)
                 txt = r.stdout.decode("mbcs", "ignore")
             except Exception:
@@ -669,7 +744,7 @@ def index_lookup(names, timeout_per=20):
     try:
         subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
                         "-File", ps_f, "-InFile", in_f, "-OutFile", out_f],
-                       capture_output=True, timeout=timeout_per * len(names) + 30)
+                       capture_output=True, creationflags=_NO_WINDOW, timeout=timeout_per * len(names) + 30)
         if os.path.isfile(out_f):
             for line in io.open(out_f, encoding="utf-8-sig", errors="ignore"):
                 parts = line.rstrip("\r\n").split("\t")
@@ -956,10 +1031,7 @@ class App(tk.Tk):
         win.configure(bg=BG)
         win.geometry("780x712")
         win.transient(self)
-        try:
-            win.iconbitmap(default="")
-        except tk.TclError:
-            pass
+        apply_icon(win)
 
         head = tk.Frame(win, bg=BG)
         head.pack(fill="x", padx=18, pady=(16, 8))
@@ -1123,7 +1195,8 @@ class App(tk.Tk):
 
     def _run(self, ae_exe, jsx_path, out_dir, work):
         try:
-            self.proc = subprocess.Popen([ae_exe, "-r", jsx_path], cwd=os.path.dirname(ae_exe))
+            self.proc = subprocess.Popen([ae_exe, "-r", jsx_path], cwd=os.path.dirname(ae_exe),
+                     creationflags=_NO_WINDOW)
         except Exception as e:
             self._queue_log(f"启动 AE 失败：{e}", "bad")
             self.worker = None
@@ -1289,7 +1362,7 @@ class App(tk.Tk):
             for extra in ([], ["/F"]):
                 try:
                     subprocess.run(["taskkill", "/PID", str(pid), "/T"] + extra,
-                                   capture_output=True, timeout=20)
+                                   capture_output=True, creationflags=_NO_WINDOW, timeout=20)
                 except Exception:
                     pass
                 for _ in range(10):
@@ -1401,7 +1474,8 @@ def run_cli(argv):
     ae_exe = installs[0][1]
     print(f"AE   {ae_exe}")
     print(f"工程 {work}")
-    subprocess.Popen([ae_exe, "-r", jsx_path], cwd=os.path.dirname(ae_exe))
+    subprocess.Popen([ae_exe, "-r", jsx_path], cwd=os.path.dirname(ae_exe),
+                     creationflags=_NO_WINDOW)
 
     rep = os.path.join(out_dir, "_relink_report.json")
     t0 = time.time()
@@ -1424,5 +1498,6 @@ if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "--cli":
         sys.exit(run_cli(sys.argv[2:]))
     app = App()
+    apply_icon(app)
     app.protocol("WM_DELETE_WINDOW", app._on_close)
     app.mainloop()
