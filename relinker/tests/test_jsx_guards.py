@@ -89,6 +89,28 @@ def _():
     need(not jsx.validate(t), "自检没过：%r" % (jsx.validate(t),))
 
 
+@check("E 附着模式（attach）：工程不匹配时绝不 app.open()，只提示")
+def _():
+    """1.1.9：这是「手动打开」这条最可靠路径的关键护栏。
+
+    背景（2026-11-17 真机）：脚本自己 app.open() 会撞上 Optical Flares 的窗口死锁；
+    用户手动打开工程则每次都能过。所以 attach 模式下必须**绝不自己开工程**，
+    工程对不上就写 FATAL 提示，让用户去 AE 里打开正确的工程。
+    """
+    t = jsx.render(r"D:\ae\again.aep", [r"D:\ae"], False, False, "", True,
+                   r"D:\ae\.ae_doctor", app_ver="1.1.9", attach=True)
+    need('attach: true' in t, "attach 没写进 CFG")
+    # 关键：attach 分支里不能出现「自己去开工程」的调用
+    need('if (CFG.attach){' in t, "attach 分支没了")
+    need('当前打开的工程不是目标工程' in t, "不匹配时的提示丢了")
+    # 普通模式仍保留 app.open()（自动打开路径不受影响）
+    t2 = jsx.render(r"D:\ae\again.aep", [r"D:\ae"], False, False, "", True,
+                    r"D:\ae\.ae_doctor", app_ver="1.1.9", attach=False)
+    need('app.open(want);' in t2, "非 attach 模式必须还保留 app.open()（自动打开路径）")
+    need('attach: false' in t2, "非 attach 模式 CFG.attach 应为 false")
+    need(not jsx.validate(t), "attach 版自检没过：%r" % (jsx.validate(t),))
+
+
 def main():
     print("拾链 —— JSX 护栏回归（tests/test_jsx_guards.py）")
     print("-" * 66)

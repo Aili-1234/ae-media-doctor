@@ -364,20 +364,52 @@ PLUGIN_BLOCK_CLASSES = ("VCWINDOW",)
 PLUGIN_BLOCK_TITLES = ("Optical Flares", "Video Copilot")
 
 
+def _extra_plugin_signs():
+    """从「卡死插件名单」文件里读用户 / 维护者后来加进去的插件特征（类名或标题）。
+
+    为什么要有这个：插件窗口会不断冒出新的。2026-11-17 只实测见过 Optical Flares，
+    但以后用户可能撞上别的插件弹类似窗口 —— 不想每来一个就改一次代码、重打包，
+    就把"认什么"放到一个普通文本文件里，加一行就能扩。
+
+    文件：`%APPDATA%\\AE素材医生\\plugin_block_signs.txt`，每行一个特征，
+    `#` 开头是注释。命中任意一行就算卡死嫌疑（类名或标题包含都算）。
+    文件不存在 / 读不了 / 是坏内容，一律当没有 —— 绝不因此报错、也绝不误判。
+    """
+    try:
+        import os
+        from . import const
+        p = os.path.join(const.APP_HOME, "plugin_block_signs.txt")
+        if not os.path.isfile(p):
+            return []
+        out = []
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            for ln in fh:
+                s = ln.strip()
+                if s and not s.startswith("#"):
+                    out.append(s)
+        return out
+    except Exception:
+        return []
+
+
 def plugin_block_window(pid):
     """返回把 AE 卡住的插件窗口（dict），没有就 None。
 
     只认实测见过的类名 / 标题，不猜。宁可漏报（退化成"无响应"），也不误伤
     正常弹出的插件面板（比如 Element 3D 的面板是正常的，不该被当成卡死）。
     """
+    extra = _extra_plugin_signs()
     try:
         for w in windows_of(pid):
             if not w.get("visible"):
                 continue
-            if (w.get("cls") or "") in PLUGIN_BLOCK_CLASSES:
+            cls = w.get("cls") or ""
+            if cls in PLUGIN_BLOCK_CLASSES or (extra and cls in extra):
                 return w
-            title = (w.get("title") or "")
+            title = w.get("title") or ""
             if any(t.lower() in title.lower() for t in PLUGIN_BLOCK_TITLES):
+                return w
+            if extra and any(s.lower() in title.lower() for s in extra):
                 return w
     except Exception:
         return None

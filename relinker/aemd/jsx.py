@@ -359,7 +359,10 @@ function seqGuard(item, curPath, target){
        Optical Flares 会把自己的窗口挂进主线程并互等，AE 停在「打开项目 0%」再不动；
        而用户手动（先开 AE、再双击工程）是能过去的。默认 false = 老行为，对拍不受影响。 */
     warmOpen: false,
-    warmWait: 0""",
+    warmWait: 0,
+    /* 1.1.9 附着模式：用户自己在 AE 里打开了工程，脚本绝不 app.open()（自己开会撞插件窗口死锁），
+       只对当前 app.project 跑修复；工程路径对不上就明确提示，让用户去 AE 里打开正确的工程。 */
+    attach: false""",
      ""),
     (r"""/* 1.1.9 热启动：整段主体包成函数，等宿主把工程交进来再跑（见文件末尾的启动器）。
    冷启动路径下这层包装等价于直接调用，行为与以前一致。 */
@@ -368,6 +371,21 @@ try {
     var proj = app.project;""",
      r"""try {
     var proj = app.project;"""),
+    # 1.1.9 附着模式：工程路径对不上时，attach 分支绝不 app.open()（新增，对拍时删掉）
+    (r"""    if (!proj || !proj.file || dec(proj.file.fsName) !== dec(want.fsName)){
+        if (CFG.attach){
+            /* 附着模式：绝不自己开工程（自己开会撞上插件窗口死锁）。
+               当前工程不是目标工程 → 明确提示，让用户去 AE 里打开正确的工程。 */
+            L("FATAL 当前打开的工程不是目标工程，请先在 AE 里打开： " + CFG.project);
+            L("FATAL （当前是：" + (proj && proj.file ? dec(proj.file.fsName) : "（没有工程）") + "）");
+            L("FATAL 提示：拾链的「手动模式」就是为这个场景准备的 —— 在 AE 里自己打开工程，"
+              + "再回来跑一次，就不会撞上插件窗口卡死。");
+            flush();
+            return;
+        }
+        L("OPEN      " + CFG.project);""",
+     r"""    if (!proj || !proj.file || dec(proj.file.fsName) !== dec(want.fsName)){
+        L("OPEN      " + CFG.project);"""),
     # 1.1.9：末尾启动器（主体已包成 aemdRunAll，多了收尾的 } 与热启动等待器）
     ('    L("DONE-OK");\n    flush();\n} catch (e){\n    L("FATAL " + e.toString() + " line " + e.line);\n    try { flush(); } catch (e2) {}\n}\n}\n\n/* ===== 1.1.9 启动器 =====\n   热启动（warmOpen）：脚本先只把日志建好（宿主据此判「脚本已就位」），\n   然后每半秒看一眼工程开了没有 —— 工程由宿主用 ShellExecute 交给 AE（等同双击）。\n   为什么要绕这一圈：冷启动就 app.open() 会撞上插件自己弹的窗口（真机是 Optical Flares），\n   AE 主线程在两个等待里互锁，停在「打开项目 0%」再也不动；等 AE 完全起来、消息循环在转，\n   同样的打开动作就能过去（用户手动一直是这么做的）。\n   冷启动：直接跑，一个字节都不变。 */\nvar aemdWarmN = 0;\nvar aemdWarmId = 0;\nvar aemdWarmDone = false;\n\nfunction aemdWarmTick(){\n    if (aemdWarmDone) return;\n    aemdWarmN++;\n    var hit = false;\n    try {\n        var p = app.project;\n        var want = new File(CFG.project);\n        hit = !!(p && p.file && dec(p.file.fsName) === dec(want.fsName));\n    } catch(e){ hit = false; }\n    if (hit){\n        aemdWarmDone = true;\n        try { if (aemdWarmId) app.cancelTask(aemdWarmId); } catch(e){}\n        aemdRunAll();\n        return;\n    }\n    if (aemdWarmN > CFG.warmWait * 2){\n        aemdWarmDone = true;\n        try { if (aemdWarmId) app.cancelTask(aemdWarmId); } catch(e){}\n        L("FATAL 等工程打开超时（" + CFG.warmWait + " 秒）：宿主没能把工程交给 AE，或者工程被弹窗挡住了");\n        flush();\n    }\n}\n\nif (CFG.warmOpen){\n    L("WARM      脚本已就位，等宿主把工程交给 AE 打开（最多 " + CFG.warmWait + " 秒）");\n    try {\n        aemdWarmId = app.scheduleTask("aemdWarmTick()", 500, true);\n    } catch(e){\n        L("WARM-ERR  排不进定时器（" + e.toString() + "）—— 退回老做法，自己开工程");\n        aemdRunAll();\n    }\n} else {\n    aemdRunAll();\n}\n',
      '    L("DONE-OK");\n    flush();\n} catch (e){\n    L("FATAL " + e.toString() + " line " + e.line);\n    try { flush(); } catch (e2) {}\n}\n'),
@@ -424,7 +442,7 @@ def js_list(items):
 def render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
            cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
            report_dir=None, state_dir=None, app_ver=None, mapping=None,
-           only_missing=None, warm_open=False, warm_wait=0):
+           only_missing=None, warm_open=False, warm_wait=0, attach=False):
     """把模板填成 JSX 文本（不落盘）。**与 v1.9.8 build_jsx() 逐字节一致**。
 
     `report_dir` / `state_dir` / `app_ver` 是 v2 的新入口（一代直接读模块常量），
@@ -452,6 +470,8 @@ def render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
         # 1.1.9 热启动：默认关（老行为）—— 打开脚本生成时显式传 True 才启用。
         ("__WARM_OPEN__", "true" if warm_open else "false"),
         ("__WARM_WAIT__", str(int(warm_wait or 0))),
+        # 1.1.9 附着模式：用户自己开好了工程，脚本不 app.open()
+        ("__ATTACH__", "true" if attach else "false"),
         # 1.1.0：手工映射表整个塞进 JSX（键已规范化：小写、正斜杠）。空表 → `{}`，
         # 于是「没配映射」与 v1.9.8 行为完全相同（对拍靠 KNOWN_DIFFS 把这一行删掉）。
         ("__MAPPING__", _js_object(mapping or {})),
@@ -516,13 +536,13 @@ def _node_check(text):
 def build(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
           cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
           report_dir=None, state_dir=None, path=None, mapping=None, only_missing=None,
-          warm_open=False, warm_wait=0):
+          warm_open=False, warm_wait=0, attach=False):
     """render → validate → 落盘到 target_path() → 返回落盘路径。"""
     text = render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=depth,
                   cons_mode=cons_mode, launch_ms=launch_ms, work_dir=work_dir,
                   log_path=log_path, report_dir=report_dir, state_dir=state_dir,
                   mapping=mapping, only_missing=only_missing,
-                  warm_open=warm_open, warm_wait=warm_wait)
+                  warm_open=warm_open, warm_wait=warm_wait, attach=attach)
     problems = validate(text)
     if problems:
         raise RuntimeError("生成的 JSX 没通过自检：" + "；".join(problems))
@@ -561,7 +581,10 @@ var CFG = {
        Optical Flares 会把自己的窗口挂进主线程并互等，AE 停在「打开项目 0%」再不动；
        而用户手动（先开 AE、再双击工程）是能过去的。默认 false = 老行为，对拍不受影响。 */
     warmOpen: __WARM_OPEN__,
-    warmWait: __WARM_WAIT__
+    warmWait: __WARM_WAIT__,
+    /* 1.1.9 附着模式：用户自己在 AE 里打开了工程，脚本绝不 app.open()（自己开会撞插件窗口死锁），
+       只对当前 app.project 跑修复；工程路径对不上就明确提示，让用户去 AE 里打开正确的工程。 */
+    attach: __ATTACH__
 };
 
 /* 1.1.0 手工映射表：键是小写原文件名或原完整路径，值是目标文件的绝对路径 */
@@ -965,6 +988,16 @@ try {
     var openedHere = false;
     var want = new File(CFG.project);
     if (!proj || !proj.file || dec(proj.file.fsName) !== dec(want.fsName)){
+        if (CFG.attach){
+            /* 附着模式：绝不自己开工程（自己开会撞上插件窗口死锁）。
+               当前工程不是目标工程 → 明确提示，让用户去 AE 里打开正确的工程。 */
+            L("FATAL 当前打开的工程不是目标工程，请先在 AE 里打开： " + CFG.project);
+            L("FATAL （当前是：" + (proj && proj.file ? dec(proj.file.fsName) : "（没有工程）") + "）");
+            L("FATAL 提示：拾链的「手动模式」就是为这个场景准备的 —— 在 AE 里自己打开工程，"
+              + "再回来跑一次，就不会撞上插件窗口卡死。");
+            flush();
+            return;
+        }
         L("OPEN      " + CFG.project);
         app.open(want);
         proj = app.project;

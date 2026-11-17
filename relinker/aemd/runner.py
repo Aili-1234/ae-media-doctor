@@ -56,7 +56,7 @@ class Options:
 
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
-                 mapping_path="", only_missing=False, warm_open=False):
+                 mapping_path="", only_missing=False, warm_open=False, attach=False):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -75,6 +75,9 @@ class Options:
         # 所以默认不用，只留开关（Options(warm_open=True) / 以后再说）。
         # 默认关 = 行为与 1.1.7 完全一致，不给已经有戏的路径添新变量。
         self.warm_open = bool(warm_open)
+        # 1.1.9 附着模式：用户自己在 AE 里开好了工程，脚本绝不 app.open()。
+        # 这是"手动打开"这条最可靠路径的落点 —— 用户来找拾链前就是这么打开工程的。
+        self.attach = bool(attach)
 
 
 class CopyProjectError(RuntimeError):
@@ -248,6 +251,9 @@ class Run(object):
         # 1.1.9 热启动能不能用：得看这台机器上 A2（Startup 目录）这条路通不通 ——
         # 只有 A2 才谈得上"先起 AE、再交工程"，`-r`/手动那两条不是这个节奏。
         self.warm = bool(self.opt.warm_open) and self._can_warm()
+        # 1.1.9 附着模式：显式 attach，或走手动模式（用户 Run Script File）时，
+        # 脚本都绝不 app.open() —— 用户自己开工程，脚本只对当前工程跑修复。
+        self.attach = bool(self.opt.attach) or (self.force_mode is aehost.LaunchMode.MANUAL)
         # ④ 生成 JSX 并落到唯一合法目录（R9：非 ASCII 路径会毁掉一切）
         # 1.1.0：先把手工映射表读出来塞进脚本。表坏了 / 没有都只是空表（mapping.load 不抛），
         # 所以「读映射失败」永远不会变成「本次跑不了」。
@@ -262,7 +268,8 @@ class Run(object):
                 depth=self.opt.depth, cons_mode=self.opt.cons_mode,
                 work_dir=const.WORK_DIR, log_path=self.log_path,
                 state_dir=self.state_dir, launch_ms=0, mapping=table, only_missing=only,
-                warm_open=self.warm, warm_wait=const.WARM_OPEN_WAIT_S if self.warm else 0)
+                warm_open=self.warm, warm_wait=const.WARM_OPEN_WAIT_S if self.warm else 0,
+                attach=self.attach)
         except (OSError, RuntimeError) as e:
             raise ScriptGenError("生成脚本失败：%s" % e)
         self.log("SCRIPT 脚本已生成 %s" % self.jsx_path, "dim")
@@ -1084,8 +1091,10 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
               force_mode=aehost.LaunchMode.MANUAL if opt["manual"] else None)
 
     # R3：别人的 AE 在跑。--yes 时允许关掉（CLI 才有的显式授权），否则直接 3
+    # 例外：--manual（附着模式）时 AE 开着是**正常**的 —— 用户就是自己开着 AE、
+    # 打开工程后让脚本对当前工程跑修复的，这里绝不关、也绝不拒绝。
     foreign = aehost.procs()
-    if foreign:
+    if foreign and not opt["manual"]:
         if not opt["yes"]:
             emit("检测到已有 AE 在运行（PID %s）—— 请先关掉它，或加 --yes 让本工具关掉再跑"
                  % ",".join(str(p) for p, _w in foreign), "bad")

@@ -777,7 +777,9 @@ def ensure_ready(installs, log=None, force_mode=None, jsx_path=None, token=None)
     emit = log or (lambda s, tag=None: None)
 
     running = procs()
-    if running:
+    # 1.1.9 附着模式（MANUAL）：AE 开着是**正常**的 —— 用户自己开好了工程、
+    # 只让脚本对当前工程跑修复。这里不再把它当"别人的 AE 占着锁"去拒绝。
+    if running and force_mode is not LaunchMode.MANUAL:
         raise BlockedByForeignAE([p for p, _w in running])
 
     ae_exe = ""
