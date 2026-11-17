@@ -525,8 +525,7 @@ class MainWindow(object):
         self._build_block_options()     # ③
         self._build_block_buttons()     # ④
         self._build_block_kpi()         # ⑤
-        self._build_block_plugins()     # ⑤½ 插件清单（默认隐藏，跑完有结果才显示）
-        self._build_block_log()         # ⑥
+        self._build_block_log()         # ⑥（日志卡内部右侧含插件栏）
         # 2026-11-15 P0：**启动时一次都不许写 settings.json**。
         # 原来这里有一句 `self._persist()`：界面按默认值建好，就把默认值原样写回。
         # 只要读配置那一步失败（真机上是一次带 BOM 的文件读不出来），
@@ -694,6 +693,7 @@ class MainWindow(object):
         self.var_consmode = tk.StringVar(value=self._cons_text())
         self.var_save = tk.BooleanVar(value=bool(self.cfg.get("save_project", True)))
         self.auto_close = tk.BooleanVar(value=bool(self.cfg.get("close_ae", False)))
+        self.var_close_existing = tk.BooleanVar(value=bool(self.cfg.get("close_existing", False)))
 
         t_dry = W.Toggle(left, "只检查，不改工程", self.var_dry)
         t_dry.grid(row=0, column=0, sticky="w")
@@ -716,6 +716,11 @@ class MainWindow(object):
                             "移进：复制后确认大小一致，再删原文件（省空间，不能撤销）。")
         t_close = W.Toggle(right, "跑完关掉本程序启动的 AE", self.auto_close)
         t_close.grid(row=1, column=0, sticky="w")
+        t_close_existing = W.Toggle(right, "检测到 AE 在跑时，自动关掉再跑", self.var_close_existing)
+        t_close_existing.grid(row=2, column=0, sticky="w")
+        W.Tip(t_close_existing, "勾上后：点「开始修复」时如果发现你已开着一个 AE，\n"
+                              "拾链会先把它关掉、再启动自己的 AE 跑修复。\n"
+                              "不勾：检测到 AE 在跑就停下，提示你先手动关掉。")
         t_save = W.Toggle(left, "跑完保存工程", self.var_save)
         t_save.grid(row=2, column=0, sticky="w")
         W.Tip(t_save, "跑完在 AE 里按 Ctrl+S 把结果存进工程。取消勾选就只改不存，需自己保存。")
@@ -784,33 +789,32 @@ class MainWindow(object):
         f = tk.Frame(parent, bg=T.LINE, width=1)
         f.grid(row=0, column=col, sticky="ns")
 
-    # ⑤½ 插件区（默认隐藏；跑完有插件信息才显示：缺失数 + 完整清单）
-    def _build_block_plugins(self):
-        c = W.card(self.root)
+    # ⑤½ 插件栏（放在日志卡**右侧**的窄栏：插件名横向需求小，不单独占一行）
+    def _build_block_plugins(self, wrap):
+        # 插件栏是日志卡 wrap 右侧的一个子卡片，默认不 pack（跑完有内容才 pack 到日志右侧）。
+        c = W.card(wrap)
         self.plugin_card = c
-        # 默认不 pack —— 初始布局与之前完全一致，跑完有插件信息才在日志卡前 pack 进来，
-        # 避免空卡挤占窗口空间（也免得把依赖坐标的 UI 探针测试带崩）。
         head = tk.Frame(c, bg=T.CARD)
-        head.pack(fill="x", padx=T.PAD_L, pady=(T.PAD_S, 0))
+        head.pack(fill="x", padx=T.PAD_S, pady=(T.PAD_S, 0))
         self.lb_plugin_title = tk.Label(head, text="插件", bg=T.CARD, fg=T.FG,
                                         font=T.FONT_SUBTITLE)
         self.lb_plugin_title.pack(side="left")
         self.lb_plugin_count = tk.Label(head, text="", bg=T.CARD, fg=T.DIM, font=T.FONT)
-        self.lb_plugin_count.pack(side="left", padx=(T.PAD_L, 0))
+        self.lb_plugin_count.pack(side="left", padx=(T.PAD_S, 0))
         self.plugin_body = tk.Text(c, bg=T.CARD, fg=T.FG, font=T.FONT, bd=0,
-                                   highlightthickness=0, wrap="word", height=1,
-                                   padx=T.PAD_L, pady=T.PAD_S)
-        self.plugin_body.pack(fill="x")
+                                   highlightthickness=0, wrap="word", width=22,
+                                   padx=T.PAD_S, pady=T.PAD_S)
+        self.plugin_body.pack(fill="both", expand=True)
         self.plugin_body.configure(state="disabled")
         self._plugin_card_visible = False
 
     def _show_plugins(self, missing_plugins, third_party_plugins):
-        """跑完把插件信息写进插件区。缺失 0 也**明确显示 0**（不隐藏）。
+        """跑完把插件信息写进日志右侧的插件栏。缺失 0 也**明确显示 0**（不隐藏）。
 
         规则：
-          · 有缺失 → 标题「插件」+ 红字「缺失 N 个」+ 缺失清单
-          · 无缺失但有引用 → 标题「插件」+ 绿字「缺失 0 个」+ 已装清单
-          · 都没解析到 → 隐藏整卡
+          · 有缺失 → 「缺失 N 个」（红）+ 缺失清单
+          · 无缺失但有引用 → 「缺失 0 个」（绿）+ 已装清单
+          · 都没解析到 → 隐藏插件栏
         """
         missing = list(missing_plugins or [])
         tp = list(third_party_plugins or [])
@@ -820,21 +824,20 @@ class MainWindow(object):
                 self._plugin_card_visible = False
             return
         if not self._plugin_card_visible:
-            self.plugin_card.pack(fill="x", padx=20, pady=(T.PAD, 0), before=self.log_card)
+            self.plugin_card.pack(side="right", fill="y", padx=(T.PAD_S, 0))
             self._plugin_card_visible = True
         if missing:
             self.lb_plugin_count.configure(text="缺失 %d 个" % len(missing), fg=T.BAD_C)
-            body = "缺失（AE 里没装）：\n" + "\n".join("  · %s" % n for n in missing)
+            body = "缺失（AE 没装）：\n" + "\n".join("· %s" % n for n in missing)
         else:
             self.lb_plugin_count.configure(text="缺失 0 个", fg=T.OK_C)
-            body = "此工程引用的第三方插件都已安装：\n" + "\n".join("  · %s" % n for n in tp)
+            body = "已装：\n" + "\n".join("· %s" % n for n in tp)
         self.plugin_body.configure(state="normal")
         self.plugin_body.delete("1.0", "end")
         self.plugin_body.insert("1.0", body)
-        lines = body.count("\n") + 1
-        self.plugin_body.configure(height=max(1, min(lines, 10)), state="disabled")
+        self.plugin_body.configure(state="disabled")
 
-    # ⑥ 日志区（标题行放「日志」+ 三颗结果类按钮）
+    # ⑥ 日志区（标题行放「日志」+ 三颗结果类按钮；右侧是插件栏）
     def _build_block_log(self):
         c = W.card(self.root)
         self.log_card = c
@@ -869,6 +872,7 @@ class MainWindow(object):
         sb = W.SlimScroll(wrap, self.txt, track=T.LOG_BG, thumb=T.BTN, bg=T.LOG_BG)
         sb.pack(side="left", fill="y")
         self.sb_log = sb
+        self._build_block_plugins(wrap)   # 插件栏：日志右侧窄栏（默认隐藏）
         self.txt.configure(state="disabled")
         for tag, color in (("ok", T.OK_C), ("bad", T.BAD_C), ("warn", T.WARN_C),
                            ("dim", T.DIM), ("head", "#b79cff")):
@@ -959,6 +963,7 @@ class MainWindow(object):
             "consolidate_mode": _cfg.consolidate_mode_value(
                 self.var_consmode.get(), self._cons_on()),
             "close_ae": bool(self.auto_close.get()),
+            "close_existing": bool(self.var_close_existing.get()),
             "index_search": bool(self.var_idx.get()),
         }
 
@@ -1097,6 +1102,7 @@ class MainWindow(object):
             copy_project=bool(self.var_copy.get()),
             close_own_ae=bool(self.auto_close.get()),
             only_missing=bool(only_missing),
+            close_existing=bool(self.var_close_existing.get()),
         )
 
     def _ae_exe(self):

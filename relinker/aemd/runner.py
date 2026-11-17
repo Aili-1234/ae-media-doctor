@@ -56,7 +56,8 @@ class Options:
 
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
-                 mapping_path="", only_missing=False, warm_open=False, attach=False):
+                 mapping_path="", only_missing=False, warm_open=False, attach=False,
+                 close_existing=False):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -78,6 +79,8 @@ class Options:
         # 1.1.9 附着模式：用户自己在 AE 里开好了工程，脚本绝不 app.open()。
         # 这是"手动打开"这条最可靠路径的落点 —— 用户来找拾链前就是这么打开工程的。
         self.attach = bool(attach)
+        # 1.1.9 检测到已有 AE 时：勾了「自动关掉再跑」就自动关掉它继续，否则 BLOCKED 等用户手关
+        self.close_existing = bool(close_existing)
 
 
 class CopyProjectError(RuntimeError):
@@ -322,11 +325,30 @@ class Run(object):
                 [("After Effects", self.ae_exe)], log=self.log, force_mode=self.force_mode,
                 jsx_path=self.jsx_path, token=self.token)
         except aehost.BlockedByForeignAE as e:
-            self._restore_plugins()
-            self.state = State.BLOCKED
-            self.log("SKIP     已有 AE PID %s，本次不启动（请用户先关闭）"
-                     % ",".join(str(p) for p in e.pids), "warn")
-            raise
+            # 1.1.9：勾了「自动关掉再跑」→ 关掉现有 AE 后重试一次（不抛 BLOCKED）。
+            if self.opt.close_existing and e.pids:
+                self.log("CLOSE    检测到已有 AE（PID %s），按设置自动关掉再继续"
+                         % ",".join(str(p) for p in e.pids), "warn")
+                for pid in e.pids:
+                    try:
+                        aehost.close_own_ae(pid, "用户勾了自动关闭", log=self.log, wait=6, force=True)
+                    except Exception:
+                        pass
+                try:
+                    self.mode, self.launch = aehost.ensure_ready(
+                        [("After Effects", self.ae_exe)], log=self.log,
+                        force_mode=self.force_mode, jsx_path=self.jsx_path, token=self.token)
+                except aehost.BlockedByForeignAE:
+                    self._restore_plugins()
+                    self.state = State.BLOCKED
+                    self.log("SKIP     关掉后仍有 AE 在跑，本次不启动", "warn")
+                    raise
+            else:
+                self._restore_plugins()
+                self.state = State.BLOCKED
+                self.log("SKIP     已有 AE PID %s，本次不启动（请用户先关闭）"
+                         % ",".join(str(p) for p in e.pids), "warn")
+                raise
         self.state = State.STARTING if self.mode is not aehost.LaunchMode.MANUAL else State.RUNNING
         self.log("LAUNCH  %s" % self.launch.describe(), "dim")
         return self
@@ -1126,7 +1148,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
     # 关的仍然只可能是我们自己拉起的那只（aehost.close_own_ae 的白名单）。
     options = Options(dry=opt["dry"], save=opt["save"], copy_project=not opt["dry"],
                       close_own_ae=opt["close_ae"], mapping_path=opt["mapping"],
-                      only_missing=opt["only_missing"])
+                      only_missing=opt["only_missing"], close_existing=bool(opt["yes"]))
     # t-21：控制台两路输出对齐。控制台其实是两路交织 ——
     #   ①JSX 日志逐行回显（SUMMARY / SAVED / DONE-OK…）
     #   ②Run 自己打的 DONE / NOTE / WARN
