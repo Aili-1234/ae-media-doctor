@@ -657,7 +657,7 @@ class Run(object):
             tp = []
         if tp:
             self.log("PLUGINS  此工程引用了 %d 个第三方插件：%s"
-                     % (len(tp), "、".join(tp)), "warn")
+                     % (len(tp), "、".join(tp)), "dim")
         self.result = Result(
             report=rep, stats=stats, summary=reports.summary_line(stats),
             missing=missing, log_writable=lw, log_path=self.log_path,

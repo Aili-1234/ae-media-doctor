@@ -114,11 +114,11 @@ def default_third_party_signs():
       · 运行时从 AE Plug-ins 目录扫到的第三方 .aex 文件名（动态，适配不同机器）
     """
     signs = {
-        "bcc", "s_", "sapphire", "opticalflares", "deepglow", "bokeh",
-        "shine", "trapcode", "particular", "form", "element", "saber",
+        "bcc", "sapphire", "opticalflares", "deepglow", "bokeh",
+        "shine", "trapcode", "particular", "saber",
         "twitch", "nebulo", "tracery", "rsmb", "redgiant", "videocopilot",
         "boris", "continuum", "maxon", "cineware", "frischluft",
-        "rowbyte", "revision", "plugin",
+        "rowbyte", "revision", "element3d", "frischluftdepth",
     }
     # 动态补充：扫 AE 的第三方 .aex 文件名（去 .aex、去空格、小写）
     try:

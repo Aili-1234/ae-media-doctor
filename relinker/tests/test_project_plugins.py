@@ -79,6 +79,21 @@ def _():
         need(must in signs, "缺第三方特征 %s" % must)
 
 
+@check("E. 不误判官方：Transform/Format/Plugin 等通用词插件不算第三方")
+def _():
+    """回归护栏：form/plugin/element 这类短子串会误命中官方插件（Transform/Format/Plugin）。
+    2026-11-17 抓到这个 bug —— 去掉危险短子串后，官方插件必须一个都不误判。"""
+    signs = project_plugins.default_third_party_signs()
+    for official in ("Transform", "Format", "Plugin", "Elementary", "Camera",
+                     "Gradient Ramp", "Turbulent Displace", "亮度和对比度", "马赛克", "曲线"):
+        need(not project_plugins._is_third_party(official, signs),
+             "官方插件被误判成第三方：%s" % official)
+    # 第三方仍要认得出
+    for tp in ("BCC 上色", "S_光线", "Optical Flares", "Shine", "Particular", "Element 3D"):
+        need(project_plugins._is_third_party(tp, signs),
+             "第三方漏判：%s" % tp)
+
+
 def main():
     print("拾链 —— 工程插件解析（tests/test_project_plugins.py）")
     print("-" * 66)

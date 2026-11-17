@@ -1209,11 +1209,11 @@ class MainWindow(object):
                 self.log("WARN      %s" % w, "warn")
             for f in res.legacy_files:
                 self.log("NOTE      工程目录里还有老版本留下的文件：%s（没有自动删）" % f, "dim")
-            # 1.1.9：列出工程引用的第三方插件，让用户不用打开第二遍去比对
+            # 1.1.9：列出工程引用的第三方插件（不是"缺失"，是"用到了"——换机时好对照）
             tp = getattr(res, "third_party_plugins", None) or []
             if tp:
-                self.log("PLUGINS   此工程引用了 %d 个第三方插件（可能没装/被禁用）：%s"
-                         % (len(tp), "、".join(tp)), "warn")
+                self.log("PLUGINS   此工程引用了 %d 个第三方插件：%s"
+                         % (len(tp), "、".join(tp)), "dim")
         mp = self.run_obj.missing_path() if self.run_obj is not None else ""
         self.btn_miss.configure(state="normal" if mp else "disabled")
         # 1.1.6：有缺件清单才让「只重试缺件」可点（没缺件时它没有意义）
