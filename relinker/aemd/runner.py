@@ -33,7 +33,7 @@ import os
 import sys
 import time
 
-from . import aehost, const, jsx, mapping, paths, reports, scanner, winproc
+from . import aehost, const, jsx, mapping, paths, plugin_guard, project_plugins, reports, scanner, winproc
 
 
 class State(enum.Enum):
@@ -111,7 +111,8 @@ class Result:
 
     def __init__(self, report=None, stats=None, summary="", missing=None,
                  log_writable=None, log_path="", report_path="", missing_path="",
-                 elapsed=0.0, legacy_files=None, warnings=None):
+                 elapsed=0.0, legacy_files=None, warnings=None,
+                 third_party_plugins=None):
         self.report = report or {}
         self.stats = dict(stats or {})
         self.summary = summary
@@ -123,6 +124,8 @@ class Result:
         self.elapsed = elapsed
         self.legacy_files = list(legacy_files or [])
         self.warnings = list(warnings or [])
+        # 1.1.9：工程引用的第三方插件显示名（可能没装/被临时禁用，界面展示用）
+        self.third_party_plugins = list(third_party_plugins or [])
 
 
 # 时间与睡眠做成模块级引用（测试里换掉，不必真等 90 秒）
@@ -182,6 +185,7 @@ class Run(object):
         self.warm = False           # 1.1.9 热启动：AE 起好之后由我们把工程交给它
         self._warm_sent = False     # 工程已经交出去了（只交一次）
         self._warm_at = 0.0         # 上次探测「AE 能不能响应」的时刻（节流用）
+        self._plugins_disabled = False  # 1.1.9：本轮是否禁用了第三方插件（跑完要恢复）
         self._diag = {}
         self._prompt_seen = set()  # 已经按过回车的「崩溃修复选项」窗口
         self.cancelled = False
@@ -291,14 +295,32 @@ class Run(object):
         """
         if self.state is not State.PENDING:
             raise RuntimeError("这次运行已经开过了（state=%s）" % self.state.value)
+        # 1.1.9 安全网：先抢救「上次崩了没恢复」的插件（幂等，无残留则什么都不做）。
+        try:
+            plugin_guard.recover_if_left(log=self.log)
+        except Exception:
+            pass
         self.prepare()
         aehost.clear_markers()
+        # 1.1.9 方案：自动模式下，启动 AE 前先把第三方插件禁掉（改名 .off），
+        # 让 AE 干净地启动、打开工程 —— 这些插件（Optical Flares 等）会在打开工程时
+        # 弹窗把主线程卡死。跑完（无论成败）在 _finish/_fail/_cancel 里恢复。
+        # 只对「自动打开」这条路禁；attach（用户自己开工程）不需要 —— 用户手动能过。
+        if (not self.attach and not self.opt.dry
+                and self.force_mode is not aehost.LaunchMode.MANUAL):
+            try:
+                n = plugin_guard.disable(self.ae_exe, log=self.log)
+                if n:
+                    self._plugins_disabled = True
+            except Exception as e:
+                self.log("PLUGIN   禁用第三方插件出错（跳过，不影响跑）：%s" % e, "warn")
         self.started_at = _now()
         try:
             self.mode, self.launch = aehost.ensure_ready(
                 [("After Effects", self.ae_exe)], log=self.log, force_mode=self.force_mode,
                 jsx_path=self.jsx_path, token=self.token)
         except aehost.BlockedByForeignAE as e:
+            self._restore_plugins()
             self.state = State.BLOCKED
             self.log("SKIP     已有 AE PID %s，本次不启动（请用户先关闭）"
                      % ",".join(str(p) for p in e.pids), "warn")
@@ -306,6 +328,16 @@ class Run(object):
         self.state = State.STARTING if self.mode is not aehost.LaunchMode.MANUAL else State.RUNNING
         self.log("LAUNCH  %s" % self.launch.describe(), "dim")
         return self
+
+    def _restore_plugins(self):
+        """跑完/失败/取消时恢复被禁的第三方插件（幂等，只有真禁过才动）。"""
+        if not self._plugins_disabled:
+            return
+        self._plugins_disabled = False
+        try:
+            plugin_guard.restore(log=self.log)
+        except Exception as e:
+            self.log("PLUGIN   恢复插件出错（请检查 Plug-ins 目录）：%s" % e, "bad")
 
     # ------------------------------------------------------------ 轮询
 
@@ -616,11 +648,22 @@ class Run(object):
         if lw is False:
             warnings.append("过程日志没写成（目录可能只读），以报告为准")
         warnings.extend(self._collect_warns())
+        # 1.1.9：提取工程引用的第三方插件，写日志 + 塞进结果供界面展示。
+        # 让用户不用打开第二遍去比对「这个工程还依赖哪些可能缺失的插件」。
+        tp = []
+        try:
+            tp = project_plugins.third_party_of(self.project)
+        except Exception:
+            tp = []
+        if tp:
+            self.log("PLUGINS  此工程引用了 %d 个第三方插件：%s"
+                     % (len(tp), "、".join(tp)), "warn")
         self.result = Result(
             report=rep, stats=stats, summary=reports.summary_line(stats),
             missing=missing, log_writable=lw, log_path=self.log_path,
             report_path=self.report_path, missing_path=self.missing_path,
-            elapsed=self.elapsed, legacy_files=self.legacy_files(), warnings=warnings)
+            elapsed=self.elapsed, legacy_files=self.legacy_files(), warnings=warnings,
+            third_party_plugins=tp)
         paths.clear_work()
         return self.result
 
@@ -738,6 +781,7 @@ class Run(object):
         self.state = State.DONE
         self.elapsed = _now() - self.started_at
         self.result = None
+        self._restore_plugins()          # 1.1.9：恢复被禁的第三方插件
         res = self.finish(self.report)
         for w in res.warnings:
             self.log(w, "warn")
@@ -766,6 +810,7 @@ class Run(object):
     def _fail(self, reason, lines, partial=False):
         self.state = State.FAILED
         self.elapsed = _now() - self.started_at
+        self._restore_plugins()          # 1.1.9：失败也恢复被禁的第三方插件
         msg = ["没能完成：%s" % reason]
         if partial:
             msg.append(self.partial_settlement())
@@ -780,6 +825,7 @@ class Run(object):
     def _cancel(self):
         self.state = State.CANCELLED
         self.elapsed = _now() - self.started_at
+        self._restore_plugins()          # 1.1.9：取消也恢复被禁的第三方插件
         text = "已取消 —— 没拿到结果。" + self.partial_settlement()
         self.log("CANCEL  %s" % text, "warn")
         return Poll(State.CANCELLED, self.elapsed, [], message=text, status_text="已取消")

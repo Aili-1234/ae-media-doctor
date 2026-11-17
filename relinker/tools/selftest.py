@@ -703,6 +703,26 @@ def _():
     need("ALL PASS" in text, "test_mapping 没打印 ALL PASS：%s" % text.strip()[-400:])
 
 
+@check("插件禁用/恢复（1.1.9）：tests/test_plugin_guard.py 全过")
+def _():
+    p = os.path.join(ROOT, "tests", "test_plugin_guard.py")
+    need(os.path.isfile(p), "找不到 tests\\test_plugin_guard.py")
+    out = subprocess.run([sys.executable, p], capture_output=True, cwd=ROOT, timeout=120)
+    text = _decode(out.stdout) + _decode(out.stderr)
+    need(out.returncode == 0, "test_plugin_guard 退出码 %s：%s" % (out.returncode, text.strip()[-600:]))
+    need("ALL PASS" in text, "test_plugin_guard 没打印 ALL PASS：%s" % text.strip()[-400:])
+
+
+@check("工程插件解析（1.1.9）：tests/test_project_plugins.py 全过")
+def _():
+    p = os.path.join(ROOT, "tests", "test_project_plugins.py")
+    need(os.path.isfile(p), "找不到 tests\\test_project_plugins.py")
+    out = subprocess.run([sys.executable, p], capture_output=True, cwd=ROOT, timeout=120)
+    text = _decode(out.stdout) + _decode(out.stderr)
+    need(out.returncode == 0, "test_project_plugins 退出码 %s：%s" % (out.returncode, text.strip()[-600:]))
+    need("ALL PASS" in text, "test_project_plugins 没打印 ALL PASS：%s" % text.strip()[-400:])
+
+
 @check("真机夹具随仓库走：tests/fixtures 三件齐全且能复现 21/11/1")
 def _():
     # 第 33 项。来历：p1_parity 的 D2 原先读工程目录 `.ae_doctor`，而每轮开跑都会
