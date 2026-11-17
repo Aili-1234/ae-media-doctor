@@ -67,13 +67,18 @@ class Stub(object):
 class StartupDialogTest(unittest.TestCase):
 
     def test_A_only_untitled_32770_counts(self):
-        """A：标题为空的 #32770 才算启动提示。"""
+        """A：崩溃修复框 = 空标题 **或** 标题写着「崩溃修复选项」的 #32770。
+
+        2026-11-17 真机：AE 2024 上这个框的标题**不是空的**，旧逻辑只认空标题，
+        结果它被「陌生框」那条线用 Esc 关掉（Esc = 取消 = AE 不启动）。
+        """
         wins = [
             {"hwnd": 1, "cls": "#32770", "title": "", "visible": True},
             {"hwnd": 2, "cls": "#32770", "title": "打开项目", "visible": True},
             {"hwnd": 3, "cls": "#32770", "title": "解析字体", "visible": True},
             {"hwnd": 4, "cls": "AE_CApplication_25.3", "title": "Adobe After Effects", "visible": True},
             {"hwnd": 5, "cls": "#32770", "title": "   ", "visible": False},
+            {"hwnd": 6, "cls": "#32770", "title": "崩溃修复选项", "visible": True},
         ]
         orig = winproc.windows_of
         winproc.windows_of = lambda pid: list(wins)
@@ -81,7 +86,8 @@ class StartupDialogTest(unittest.TestCase):
             got = [w["hwnd"] for w in winproc.startup_dialogs(1234)]
         finally:
             winproc.windows_of = orig
-        self.assertEqual(got, [1], "只有标题为空且可见的 #32770 才算；实得 %r" % got)
+        self.assertEqual(got, [1, 6],
+                         "空标题与「崩溃修复选项」都算；进度框不算。实得 %r" % got)
 
     def test_B_same_dialog_pressed_once(self):
         """B：同一个窗口只按一次（按不动不许刷屏）。"""
@@ -383,6 +389,8 @@ class UnknownDialogTest(unittest.TestCase):
             {"hwnd": 82, "cls": "#32770", "title": "打开项目", "visible": True},
             {"hwnd": 83, "cls": "#32770", "title": "缺少文件", "visible": True},
             {"hwnd": 84, "cls": "AE_CApplication_25.3", "title": "主窗口", "visible": True},
+            # 有标题的崩溃修复框：走「按继续」那条线，这里 Esc 掉就等于取消启动
+            {"hwnd": 85, "cls": "#32770", "title": "崩溃修复选项", "visible": True},
         ]
         texts = {83: ["3 files are missing"]}
         orig = self._stub(wins, texts, pressed)

@@ -536,6 +536,10 @@ def dismiss_unknown_dialogs(pid, seen=None, log=None):
         title = (w.get("title") or "").strip()
         if not title or w["hwnd"] in booked:
             continue
+        # 「崩溃修复选项」有自己的专线（要按「继续」，不是 Esc）—— 这里绝不能抢。
+        # 2026-11-17 真机踩过：AE 2024 的这个框有标题，被这里 Esc 掉 = 取消启动。
+        if any(k.lower() in title.lower() for k in winproc.CRASH_DIALOG_TITLES):
+            continue
         blob = (title + " " + " ".join(winproc.dialog_child_texts(w["hwnd"], limit=12))).lower()
         if any(k.lower() in blob for k in winproc.MISSING_DIALOG_KEYWORDS):
             continue

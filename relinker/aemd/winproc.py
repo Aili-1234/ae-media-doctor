@@ -270,11 +270,28 @@ def error_dialogs(pid):
 # 这个框不点，AE 永远出不了主窗口，Startup 脚本也永远不执行 —— 表现就是
 # 「等 90 秒没 marker → 降级 -r → 再等 240 秒没窗口 → 失败」，日志里一行 A2 都没有。
 # 判据：`#32770` + **标题为空** + 可见。有标题的 `#32770`（打开项目 / 解析字体）不是它。
+#: 「崩溃修复选项」这个框的标题在有些版本/语言里**不是空的**。
+#: 2026-11-17 真机：AE 2024 那次弹出来的标题就是「崩溃修复选项」——
+#: 旧逻辑只认空标题，于是被「陌生框」那条线用 Esc 关掉了；而 Esc 在这个框上等于「取消」，
+#: AE 直接不启动。认标题比认"空"稳，两边都得覆盖。
+CRASH_DIALOG_TITLES = ("崩溃修复选项", "崩溃修复", "Crash Repair", "Crash recovery")
+
+
 def startup_dialogs(pid):
-    """AE 启动期「标题为空的 #32770」—— 崩溃修复提示。"""
-    return [w for w in windows_of(pid)
-            if w["visible"] and (w.get("cls") or "") == "#32770"
-            and not (w.get("title") or "").strip()]
+    """AE 启动期的「崩溃修复选项」框：**空标题** 或 **标题命中 CRASH_DIALOG_TITLES** 的 #32770。
+
+    为什么两种都要认：这个框在 AE 2025 上标题是空的、在 2024 上写着「崩溃修复选项」，
+    而处理方式完全不同 —— 崩溃框要**按「继续」**（回车/鼠标点），
+    陌生框要**按 Esc**（取消）。认错一边就直接把 AE 关机了。
+    """
+    out = []
+    for w in windows_of(pid):
+        if not w["visible"] or (w.get("cls") or "") != "#32770":
+            continue
+        t = (w.get("title") or "").strip()
+        if not t or any(k.lower() in t.lower() for k in CRASH_DIALOG_TITLES):
+            out.append(w)
+    return out
 
 
 def progress_dialogs(pid, titles):
