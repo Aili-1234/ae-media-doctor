@@ -482,11 +482,19 @@ def press_startup_prompts(pid, seen=None, log=None):
         # 按完立刻复查：还在就明说「下一拍再试」——1.1.4 起真实输入优先，
         # 自绘框吞掉伪造按键这种情况才有救（2026-11-16 真机就是这么卡住的）。
         gone = not winproc.still_open(hwnd)
+        # 1.1.9：回车按不动就用鼠标点（这个框是自绘的，键盘时灵时不灵）。
+        # 2026-11-17 用户指正：日志写着"已按「继续」"，其实框还在、最后是人手点的。
+        if not gone and attempt == 1:
+            if winproc.click_continue(hwnd):
+                time.sleep(0.6)
+                gone = not winproc.still_open(hwnd)
+                emit("A2      「崩溃修复选项」回车按不动，改用鼠标点「继续」——%s"
+                     % ("过了" if gone else "还是不行"), "dim" if gone else "warn")
         if gone:
             _mark_done(hwnd)
         if not gone:
-            emit("A2      AE 弹了「崩溃修复选项」，已按「继续」但它还在（第 %d 次）——"
-                 "若下一拍仍在，请手动点一次「继续」（别点安全模式/重置首选项）" % attempt, "warn")
+            emit("A2      AE 弹了「崩溃修复选项」，回车与鼠标都没点动，框还在（第 %d 次）——"
+                 "请手动点一次「继续」（别点安全模式/重置首选项）" % attempt, "warn")
         else:
             emit("A2      AE 弹了「崩溃修复选项」（上次没正常退出），已点「继续」让它继续启动",
                  "warn")
@@ -541,6 +549,31 @@ def dismiss_unknown_dialogs(pid, seen=None, log=None):
     return n
 
 
+def plugin_block(pid, seen=None, log=None):
+    """AE 是不是被**插件自己的窗口**卡住了；是就返回那个窗口，并解释一次。
+
+    1.1.9，真机取证（2026-11-17）：again.aep 在 AE 2025 上「打开项目」到 24 秒时，
+    Video Copilot 的 Optical Flares 弹出 `VCWINDOW`，同一刻 CPU 归零、主窗口再也不回消息。
+    这不是缺素材、不是启动慢、也不是我们脚本的问题 —— 插件在主线程里等自己的窗口。
+    Esc / WM_CLOSE 都试过，无效。所以这里只做两件事：**点名**，然后让上层尽快收场。
+    """
+    w = winproc.plugin_block_window(pid)
+    if not w:
+        return None
+    emit = log or (lambda s, tag=None: None)
+    booked = seen if seen is not None else set()
+    if w.get("hwnd") not in booked:
+        booked.add(w.get("hwnd"))
+        emit("DIAG    挡路的是插件自己的窗口：「%s」（窗口类 %s）—— 不是缺素材，也不是启动慢。"
+             "Video Copilot 的 Optical Flares 这类插件会把自己的窗口挂进 AE 主线程，"
+             "窗口不关，打开工程就永远停在 0%%。" % ((w.get("title") or "").strip(),
+                                                w.get("cls") or ""), "warn")
+        emit("DIAG    处置（按省事排序）：① 换一份和 AE 2025 匹配的 Optical Flares 重装；"
+             "② 临时把 `Optical Flares.aex` 从 AE 的 Plug-ins 目录挪走，再跑一次（工程里那个效果会变成缺失，"
+             "但素材照样能接）；③ 用 AE 2024 打开工程，把该效果预渲染/删掉后再跑。", "warn")
+    return w
+
+
 def dismiss_progress_dialogs(pid, seen=None, log=None):
     """按掉 AE 自己的启动期进度框（「解析字体」「打开项目」），返回按掉几个。
 
@@ -548,8 +581,13 @@ def dismiss_progress_dialogs(pid, seen=None, log=None):
     我们把活排进 app.scheduleTask 同样排不进去 —— 真机上脚本等了 616 秒没动，
     对框按一次回车后 4 秒内就跑完（日志一次写出 20 KB）。
     只认 const.STARTUP_PROGRESS_TITLES 的标题；同一 hwnd 只按一次；有上限。
+
+    1.1.9：如果挡路的是**插件窗口**（见 `plugin_block`），一个键都不按 ——
+    那时 AE 根本没在等键盘，回车只会让日志看起来像"按了就好"，掩盖真正的原因。
     """
     if not pid:
+        return 0
+    if winproc.plugin_block_window(pid):
         return 0
     seen = seen if seen is not None else set()
     n = 0

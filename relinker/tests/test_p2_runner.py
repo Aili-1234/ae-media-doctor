@@ -612,6 +612,41 @@ def _():
             need(p3.state is runner.State.RUNNING, "AE 在跑却判失败（会误杀）：%r" % (p3.state,))
 
 
+@case("N. 插件窗口卡死：点名 + 20 秒收场，不再干等 600 秒")
+def _():
+    """2026-11-17 真机（基线，不经过本工具）：打开 again.aep 到 24 秒时
+    Video Copilot 的 Optical Flares 弹出 VCWINDOW，CPU 立刻归零，61 秒仍不动。
+    这种等下去是纯浪费 —— 要立刻点名并收场，而不是按 SCRIPT_WAIT_S 干等 10 分钟。
+    """
+    ctx = Ctx()
+    with ctx:
+        run = make_run(ctx)
+        run.start()
+        run.state = runner.State.RUNNING
+        run.log_path = os.path.join(ctx.logdir, "_never_created.log")
+        old = (aehost.procs, aehost.plugin_block, aehost.capture_hung)
+        aehost.procs = lambda: [(999, "whatever")]
+        aehost.plugin_block = lambda pid, seen=None, log=None: {
+            "hwnd": 5, "cls": "VCWINDOW", "title": "Optical Flares"}
+        aehost.capture_hung = lambda *a, **k: ""
+        try:
+            run._alive_at = 0.0
+            # elapsed 平时由 poll() 刷新；这里直接打 _poll_running，得自己给
+            run.elapsed = 5.0
+            p1 = run._poll_running([], True)
+            need(p1.state is runner.State.RUNNING,
+                 "刚看见插件窗口就判失败太急（可能只是闪一下），实得 %r" % (p1.state,))
+            need("插件窗口" in (p1.status_text or ""),
+                 "状态行要让人看见卡在选择上：%r" % (p1.status_text,))
+            run.elapsed = 31.0
+            p2 = run._poll_running([], True)
+        finally:
+            (aehost.procs, aehost.plugin_block, aehost.capture_hung) = old
+            run._block_since = 0.0
+        need(p2.state is runner.State.FAILED, "过 20 秒应当判失败，实得 %r" % (p2.state,))
+        need("Optical Flares" in (p2.message or ""), "失败原因要点名是谁挡的：%r" % (p2.message,))
+
+
 def main():
     total = len(PASS) + len(FAIL)
     print("")

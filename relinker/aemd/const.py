@@ -93,6 +93,17 @@ COLD_START_WAIT_S = 240
 #: 旧逻辑会按 START_WAIT_S=90 甚至 COLD_START 240 秒干等，用户只能看着发呆。
 HUNG_CHECK_AT_S = 25
 HUNG_WAIT_S = 75
+
+#: 1.1.9：真死锁的判据（两条同时成立才算，见 runner._poll_running）。
+#: 2026-11-17 取证：插件窗口（Optical Flares / VCWINDOW）一冒出来，CPU 就归零、
+#: 主窗口再也回不了 WM_NULL，Esc / WM_CLOSE 都无效 —— 这种等下去没有任何意义。
+#: 所以：认得出来的插件窗口只给 PLUGIN_BLOCK_WAIT_S 秒；认不出的（只是无响应 + CPU 不动）
+#: 给 DEADLOCK_WAIT_S 秒，都比 SCRIPT_WAIT_S（10 分钟）短得多。
+PLUGIN_BLOCK_WAIT_S = 20
+DEADLOCK_WAIT_S = 30
+#: 死锁采样间隔 / 判"CPU 没动"的阈值（秒）。5 秒里 CPU 涨不到 0.3 秒就算闲着。
+HANG_SAMPLE_S = 5.0
+IDLE_CPU_S = 0.3
 A2_COLD_START_TIMEOUT_S = 240
 
 A2_MARKER_TIMEOUT_S = 90

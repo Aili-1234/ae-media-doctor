@@ -156,6 +156,11 @@ class Run(object):
         self._hung_logged = False
         self._alive_at = 0.0        # 上次查「AE 还在不在」的时刻（节流用）
         self._ae_gone = 0           # 连续几次查不到 AE
+        self._block_since = 0.0     # 第一次看见「插件窗口挡路」的时刻（1.1.9）
+        self._hang_at = 0.0         # 上次采「无响应 / CPU 有没有动」的时刻（节流用，1.1.9）
+        self._cpu_last = None       # 上次采到的进程 CPU 秒数（1.1.9）
+        self._dead_since = 0.0      # 「无响应 + CPU 不动」连续了多久（1.1.9）
+        self._hung_saved = False    # 现场只存一次
         self._diag = {}
         self._prompt_seen = set()  # 已经按过回车的「崩溃修复选项」窗口
         self.cancelled = False
@@ -322,6 +327,22 @@ class Run(object):
             return self._poll_starting(lines)
         return self._poll_running(lines, started)
 
+    def _capture_hung(self, why=""):
+        """把卡死现场落盘（只存一次）。任何失败都吞掉 —— 存证据不该把主流程搞挂。"""
+        if self._hung_saved:
+            return ""
+        self._hung_saved = True
+        try:
+            ev = aehost.capture_hung(getattr(self.launch, "pid", 0) or 0,
+                                     os.path.dirname(self.log_path) if self.log_path else "",
+                                     getattr(self.launch, "exe", "") or "")
+        except Exception:
+            return ""
+        if ev and self.log is not None:
+            self.log("DIAG    卡死现场已存到 %s（%s：窗口 / 插件 / 版本）—— 下次复现请连同它一起发"
+                     % (ev, why or "卡死"), "dim")
+        return ev or ""
+
     def _poll_starting(self, lines):
         """等脚本开始跑这一段（F-17：40 秒还没动就诊断一次，别让用户对着空窗口等）。"""
         el = self.elapsed
@@ -358,16 +379,7 @@ class Run(object):
                              "确认真能打开，再排查插件。" % (const.HUNG_WAIT_S,), "warn")
                     # 1.1.7：卡死当下就把现场抓下来（窗口清单 / 插件清单 / 版本）。
                     # 以前只会说"卡了"，事后没人能判断是谁 —— 这次开始不再空手。
-                    try:
-                        ev = aehost.capture_hung(
-                            getattr(self.launch, "pid", None) or 0,
-                            os.path.dirname(self.log_path) if self.log_path else "",
-                            getattr(self.launch, "exe", "") or "")
-                        if ev:
-                            self.log("DIAG    卡死现场已存到 %s（窗口 / 插件 / 版本）—— 下次复现请连同它一起发"
-                                     % ev, "dim")
-                    except Exception:
-                        pass
+                    self._capture_hung("打开工程卡死")
 
         if el > limit:
             # 失败也先结算一次（v1.9.8 的 _fail_slow 就这么做）：用户最想知道的不是
@@ -414,7 +426,67 @@ class Run(object):
         if self._ae_gone >= self._ALIVE_GONE_LIMIT:
             return self._fail("AE 进程已经不在了（脚本没跑完），这次没接上 —— 日志最后一行是它停的地方",
                               lines, partial=True)
-        if self.total_items:
+
+        # 1.1.9：脚本已经开跑、但 AE 被卡住不干活 —— 以前这里只按 SCRIPT_WAIT_S 干等 10 分钟。
+        # 2026-11-17 真机时间线（基线，不经过本工具）：打开工程 22.6s 出现「打开项目」，
+        # 24.1s Video Copilot 的 Optical Flares（VCWINDOW）冒出来，CPU 立刻归零，
+        # 61 秒仍然一动不动，Esc / WM_CLOSE 都无效。这种等下去是纯浪费 —— 用户以为"在跑"。
+        blk = None
+        try:
+            blk = aehost.plugin_block(self.launch.pid if self.launch else 0,
+                                      self._prompt_seen, self.log)
+        except Exception:
+            blk = None
+        if blk:
+            if not self._block_since:
+                self._block_since = el
+            if el - self._block_since >= const.PLUGIN_BLOCK_WAIT_S:
+                self._capture_hung("插件窗口卡死")
+                return self._fail("AE 被插件窗口卡住了：「%s」一直挂着，打开工程停在原地"
+                                  "（不是缺素材，也不是慢）—— 换插件 / 临时挪走插件 / 换 AE 版本，"
+                                  "上面 DIAG 那三行里有具体做法"
+                                  % ((blk.get("title") or "").strip() or blk.get("cls") or "?"),
+                                  lines, partial=True)
+        else:
+            self._block_since = 0.0
+
+        # 认不出来的死锁：**主窗口回不了消息 + 进程 CPU 不动**，两条同时成立才算。
+        # 只看第一条会误杀「正常加载」（那时主线程忙着读盘，一样不回消息，实测 cpu+1.3s/1.5s）。
+        if not blk and _now() - self._hang_at >= const.HANG_SAMPLE_S:
+            self._hang_at = _now()
+            pid = self.launch.pid if self.launch else 0
+            cpu = None
+            try:
+                cpu = winproc.cpu_seconds(pid)
+            except Exception:
+                cpu = None
+            prev, self._cpu_last = self._cpu_last, cpu
+            hung = False
+            try:
+                mw = winproc.main_window(pid)
+                hung = bool(mw) and winproc.is_hung(mw["hwnd"])
+            except Exception:
+                hung = False
+            idle = cpu is not None and prev is not None and (cpu - prev) < const.IDLE_CPU_S
+            if hung and idle:
+                if not self._dead_since:
+                    self._dead_since = el
+                    if not self._hung_logged:
+                        self._hung_logged = True
+                        self.log("DIAG    AE 主窗口无响应、进程也不吃 CPU —— 这是卡死，不是慢。"
+                                 "%d 秒后仍不动就收场（现场已存下来）" % (const.DEADLOCK_WAIT_S,), "warn")
+                        self._capture_hung("运行期死锁")
+                if el - self._dead_since >= const.DEADLOCK_WAIT_S:
+                    return self._fail("AE 卡死了：%d 秒里主窗口一次都没响应、CPU 也没动 —— "
+                                      "这次接不上，现场在日志目录的 hung-*.txt 里"
+                                      % int(el - self._dead_since), lines, partial=True)
+            else:
+                self._dead_since = 0.0
+
+        if blk:
+            txt = "AE 卡在插件窗口上（%s）… %ds" % (
+                (blk.get("title") or "").strip() or blk.get("cls") or "?", int(el))
+        elif self.total_items:
             txt = "正在重连… %d/%d  %ds" % (self.done_items, self.total_items, int(el))
         else:
             txt = "正在重连… 已处理 %d 条  %ds" % (self.done_items, int(el))

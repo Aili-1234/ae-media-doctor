@@ -336,6 +336,63 @@ def missing_dialogs(pid):
     return out
 
 
+#: 会把「打开工程」整条流程锁死的**插件自己的窗口**。
+#: 2026-11-17 真机取证（again.aep / AE 2025 25.3，基线：不经过本工具、直接双击开工程）：
+#:   19.6s 主窗口标题已变成工程名 → 22.6s 出现「#32770|打开项目」→ 24.1s 出现
+#:   「VCWINDOW|Optical Flares」，同一刻进程 CPU 从 +0.98s/1.5s 掉到 +0.05，之后一直是 0。
+#:   Esc、WM_CLOSE 都无效，等到 61 秒仍然一个字节不动。
+#: 结论：Video Copilot 的 Optical Flares 在主线程里等自己的窗口，AE 于是死在打开工程上，
+#: 等多久都不会自己好 —— 必须点出来（而不是让用户以为"缺素材卡住了"）。
+PLUGIN_BLOCK_CLASSES = ("VCWINDOW",)
+PLUGIN_BLOCK_TITLES = ("Optical Flares", "Video Copilot")
+
+
+def plugin_block_window(pid):
+    """返回把 AE 卡住的插件窗口（dict），没有就 None。
+
+    只认实测见过的类名 / 标题，不猜。宁可漏报（退化成"无响应"），也不误伤
+    正常弹出的插件面板（比如 Element 3D 的面板是正常的，不该被当成卡死）。
+    """
+    try:
+        for w in windows_of(pid):
+            if not w.get("visible"):
+                continue
+            if (w.get("cls") or "") in PLUGIN_BLOCK_CLASSES:
+                return w
+            title = (w.get("title") or "")
+            if any(t.lower() in title.lower() for t in PLUGIN_BLOCK_TITLES):
+                return w
+    except Exception:
+        return None
+    return None
+
+
+def cpu_seconds(pid):
+    """这个进程累计吃掉的 CPU 秒数（内核+用户），拿不到返回 None。
+
+    为什么要它：`is_hung()` 只看「窗口回不回 WM_NULL」，而**正常加载工程时主线程忙着
+    读盘，一样不回消息**（实测 cpu+1.3s/1.5s 却 hung=True）。加一条"CPU 有没有在动"
+    才能把「慢」和「真死」分开 —— 见 plugin_block_window 上面的时间线。
+    """
+    try:
+        h = ctypes.windll.kernel32.OpenProcess(0x0400 | 0x0010, False, int(pid))
+        if not h:
+            return None
+        ft, ct, kt, ut = (wt.FILETIME(), wt.FILETIME(), wt.FILETIME(), wt.FILETIME())
+        ok = ctypes.windll.kernel32.GetProcessTimes(wt.HANDLE(h), ctypes.byref(ft),
+                                                   ctypes.byref(ct),
+                                                   ctypes.byref(kt), ctypes.byref(ut))
+        ctypes.windll.kernel32.CloseHandle(wt.HANDLE(h))
+        if not ok:
+            return None
+
+        def secs(f):
+            return (f.dwHighDateTime << 32 | f.dwLowDateTime) / 1e7
+        return secs(kt) + secs(ut)
+    except Exception:
+        return None
+
+
 def dialog_has_forbidden(win):
     """框里有没有「替用户点就出事」的按钮文字。命中就别动手。"""
     blob = ((win.get("title") or "") + " "
@@ -421,6 +478,46 @@ def press_escape(hwnd):
             return True
         u.PostMessageW(wt.HWND(hwnd), 0x0100, 0x1B, 0)
         u.PostMessageW(wt.HWND(hwnd), 0x0101, 0x1B, 0)
+        return True
+    except Exception:
+        return False
+
+
+#: 「崩溃修复选项」里「继续」按钮的位置（按窗口矩形的比例，2026-11-17 用户截图量得）。
+#: 四个按钮横排在底部：以安全模式启动 / 重置首选项 / 管理增效工具 / **继续**。
+#: 走比例而不是绝对坐标，是因为这框会跟着屏幕/窗口位置走（实测出现过 (714,398) 也出现过别的）。
+CONTINUE_BTN_XY = (0.83, 0.89)
+
+
+def click_continue(hwnd):
+    """用**鼠标**点「崩溃修复选项」的「继续」，返回是否发出点击。
+
+    为什么要动鼠标：这个框是 DroverLord 自绘的（子控件只有 `OS_ViewContainer` 之类，
+    枚举不到按钮），键盘两条路都不稳 —— `PostMessage(WM_KEYDOWN)` 有时被吞，
+    `SetForegroundWindow` 会被前台锁挡掉。2026-11-17 实测：真实鼠标点击一次就过。
+
+    安全口径：先点**标题栏**激活（正文一个像素都不碰，不会误选「安全模式 / 重置首选项」），
+    再按比例点「继续」。点完把光标放回原处。
+    """
+    try:
+        u = ctypes.windll.user32
+        r = wt.RECT()
+        if not u.GetWindowRect(wt.HWND(hwnd), ctypes.byref(r)):
+            return False
+        w, h = r.right - r.left, r.bottom - r.top
+        if w < 120 or h < 60:          # 尺寸不对就别猜，免得点到别的框
+            return False
+        pt = wt.POINT()
+        u.GetCursorPos(ctypes.byref(pt))
+        for x, y in ((r.left + w // 2, r.top + 9),
+                     (r.left + int(w * CONTINUE_BTN_XY[0]), r.top + int(h * CONTINUE_BTN_XY[1]))):
+            u.SetCursorPos(int(x), int(y))
+            time.sleep(0.15)
+            u.mouse_event(0x0002, 0, 0, 0, 0)      # LEFTDOWN
+            time.sleep(0.08)
+            u.mouse_event(0x0004, 0, 0, 0, 0)      # LEFTUP
+            time.sleep(0.2)
+        u.SetCursorPos(pt.x, pt.y)
         return True
     except Exception:
         return False

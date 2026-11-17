@@ -171,6 +171,57 @@ class StartupDialogTest(unittest.TestCase):
 
 
 
+class CrashDialogClickTest(unittest.TestCase):
+    """1.1.9：回车按不动「崩溃修复选项」时，改用鼠标点「继续」。
+
+    为什么加这条：2026-11-17 用户指出 —— 日志写着"已按「继续」"，框其实还在，
+    最后是他自己用鼠标点的。这个框是自绘的，PostMessage 会被吞，
+    SetForegroundWindow 会被前台锁挡掉；真实鼠标点（先点标题栏激活、再点右下角「继续」）才稳。
+    """
+
+    def _stub(self, still_seq, press_ok=True, click_ok=True):
+        orig = (winproc.startup_dialogs, winproc.press_enter, winproc.still_open,
+                winproc.click_continue)
+        pressed, clicked = [], []
+        winproc.startup_dialogs = lambda pid: [dlg(0x501)]
+        winproc.press_enter = lambda h: (pressed.append(h), press_ok)[1]
+        winproc.click_continue = lambda h: (clicked.append(h), click_ok)[1]
+        seq = list(still_seq)
+        winproc.still_open = lambda h, timeout_ms=900: (seq.pop(0) if seq else True)
+        aehost._PRESS_TRIES.clear()
+        return orig, pressed, clicked
+
+    def _restore(self, orig):
+        (winproc.startup_dialogs, winproc.press_enter, winproc.still_open,
+         winproc.click_continue) = orig
+        aehost._PRESS_TRIES.clear()
+
+    def test_O_enter_fails_then_click_works(self):
+        """O：回车没关掉 → 点一次鼠标 → 关掉了 → 日志说清是"用鼠标点"的。"""
+        logs = []
+        # still_open 依次：按完回车 True（还在）→ 点完鼠标 False（没了）
+        orig, pressed, clicked = self._stub([True, False])
+        try:
+            n = aehost.press_startup_prompts(1234, set(), lambda s, tag=None: logs.append(s))
+        finally:
+            self._restore(orig)
+        self.assertEqual(n, 1)
+        self.assertEqual(pressed, [0x501])
+        self.assertEqual(clicked, [0x501], "回车无效时必须补一次鼠标点击")
+        self.assertTrue(any("鼠标点「继续」" in s for s in logs), "日志要写明改用了鼠标：%r" % logs)
+
+    def test_P_both_fail_asks_user_once(self):
+        """P：两种都按不动 → 明确请用户手点，且同一窗口这一拍只点一次（不刷屏）。"""
+        logs = []
+        orig, pressed, clicked = self._stub([True, True, True], click_ok=True)
+        try:
+            aehost.press_startup_prompts(1234, set(), lambda s, tag=None: logs.append(s))
+        finally:
+            self._restore(orig)
+        self.assertEqual(len(clicked), 1, "同一拍不该连点：%r" % (clicked,))
+        self.assertTrue(any("请手动点一次" in s for s in logs), "要请用户手点：%r" % logs)
+
+
 class MissingFootageDialogTest(unittest.TestCase):
     """1.1.1：「打开工程时 AE 列的缺素材提示框」。
 
