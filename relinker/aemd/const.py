@@ -101,6 +101,10 @@ HUNG_WAIT_S = 75
 #: 给 DEADLOCK_WAIT_S 秒，都比 SCRIPT_WAIT_S（10 分钟）短得多。
 PLUGIN_BLOCK_WAIT_S = 20
 DEADLOCK_WAIT_S = 30
+#: 1.1.9 热启动：先把 AE 起好、等主窗口能响应，再把工程交给它打开（等同双击）。
+#: 这是绕开「插件窗口把冷启动打开锁死」的那条路（用户手动一直是这么做的）。
+#: 脚本侧等工程打开的上限也是这个值 —— 两边同一个数，日志才对得上。
+WARM_OPEN_WAIT_S = 180
 #: 死锁采样间隔 / 判"CPU 没动"的阈值（秒）。5 秒里 CPU 涨不到 0.3 秒就算闲着。
 HANG_SAMPLE_S = 5.0
 IDLE_CPU_S = 0.3

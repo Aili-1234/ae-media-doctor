@@ -56,7 +56,7 @@ class Options:
 
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
-                 mapping_path="", only_missing=False):
+                 mapping_path="", only_missing=False, warm_open=False):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -70,6 +70,11 @@ class Options:
         self.mapping_path = mapping_path or ""
         # 1.1.6 只重试缺件：只用上一次的 _relink_missing.txt，不重扫全盘
         self.only_missing = bool(only_missing)
+        # 1.1.9 热启动（默认关）：AE 起好之后再把工程交给它打开（等同双击）。
+        # 2026-11-17 真机试过：这条路**没能**绕开 Optical Flares 的死锁（两次都在同一处卡），
+        # 所以默认不用，只留开关（Options(warm_open=True) / 以后再说）。
+        # 默认关 = 行为与 1.1.7 完全一致，不给已经有戏的路径添新变量。
+        self.warm_open = bool(warm_open)
 
 
 class CopyProjectError(RuntimeError):
@@ -122,6 +127,15 @@ _now = time.time
 _sleep = time.sleep
 
 
+def _shell_open(path):
+    """把文件交给「已经在跑」的 AE 打开 —— 等同用户在资源管理器里双击。
+
+    单独拆成一个函数是为了打桩：测试里绝不能真去开文件（会弹窗、会抢焦点）。
+    2026-11-17 真机对照：先开 AE 再双击工程能过，冷启动带工程会卡在插件窗口上。
+    """
+    os.startfile(path)     # noqa: S606  （Windows 专用；本工具只跑 Windows）
+
+
 class Run(object):
     """一次运行。用法：`r = Run(project, roots, opts, log=cb)` → `r.start()` → 循环 `r.poll()`。"""
 
@@ -161,6 +175,9 @@ class Run(object):
         self._cpu_last = None       # 上次采到的进程 CPU 秒数（1.1.9）
         self._dead_since = 0.0      # 「无响应 + CPU 不动」连续了多久（1.1.9）
         self._hung_saved = False    # 现场只存一次
+        self.warm = False           # 1.1.9 热启动：AE 起好之后由我们把工程交给它
+        self._warm_sent = False     # 工程已经交出去了（只交一次）
+        self._warm_at = 0.0         # 上次探测「AE 能不能响应」的时刻（节流用）
         self._diag = {}
         self._prompt_seen = set()  # 已经按过回车的「崩溃修复选项」窗口
         self.cancelled = False
@@ -228,6 +245,9 @@ class Run(object):
         except Exception as e:            # 预扫描失败只是少一层优化，不能拦住用户
             self.log("SCAN    预扫描失败（退回 AE 内扫描）：%s" % e, "warn")
 
+        # 1.1.9 热启动能不能用：得看这台机器上 A2（Startup 目录）这条路通不通 ——
+        # 只有 A2 才谈得上"先起 AE、再交工程"，`-r`/手动那两条不是这个节奏。
+        self.warm = bool(self.opt.warm_open) and self._can_warm()
         # ④ 生成 JSX 并落到唯一合法目录（R9：非 ASCII 路径会毁掉一切）
         # 1.1.0：先把手工映射表读出来塞进脚本。表坏了 / 没有都只是空表（mapping.load 不抛），
         # 所以「读映射失败」永远不会变成「本次跑不了」。
@@ -241,7 +261,8 @@ class Run(object):
                 self.opt.cons_dir, self.opt.save, self.state_dir,
                 depth=self.opt.depth, cons_mode=self.opt.cons_mode,
                 work_dir=const.WORK_DIR, log_path=self.log_path,
-                state_dir=self.state_dir, launch_ms=0, mapping=table, only_missing=only)
+                state_dir=self.state_dir, launch_ms=0, mapping=table, only_missing=only,
+                warm_open=self.warm, warm_wait=const.WARM_OPEN_WAIT_S if self.warm else 0)
         except (OSError, RuntimeError) as e:
             raise ScriptGenError("生成脚本失败：%s" % e)
         self.log("SCRIPT 脚本已生成 %s" % self.jsx_path, "dim")
@@ -343,6 +364,42 @@ class Run(object):
                      % (ev, why or "卡死"), "dim")
         return ev or ""
 
+    def _can_warm(self):
+        """这台机器上「A2 + 热启动」这条路通不通（看 Startup 目录挑不挑得到）。"""
+        try:
+            year = aehost.year_from_exe(self.ae_exe)
+            return bool(aehost.startup_dir(year))
+        except Exception:
+            return False
+
+    def _warm_tick(self):
+        """热启动：等 AE 主窗口能响应了，再把工程"双击"给它。
+
+        为什么不在启动参数里直接带工程：那条路等于冷启动就打开 —— 2026-11-17 真机
+        取证，Optical Flares 的窗口正是在那一刻把 AE 主线程锁死（CPU 归零、61 秒不动）。
+        用户手动能过，是因为他先让 AE 起来、再双击工程；这里照抄那个顺序。
+        """
+        if self._warm_sent or not self.warm or self.mode is not aehost.LaunchMode.A2_STARTUP:
+            return
+        if _now() - self._warm_at < 2.0:
+            return
+        self._warm_at = _now()
+        pid = getattr(self.launch, "pid", None) or 0
+        if not pid:
+            return
+        try:
+            mw = winproc.main_window(pid)
+            if not mw or winproc.is_hung(mw["hwnd"]):
+                return          # 还没起来 / 还在忙，下一拍再看
+        except Exception:
+            return
+        self._warm_sent = True
+        try:
+            _shell_open(self.work)
+            self.log("WARM      AE 已就绪，把工程交给它打开（等同双击）：%s" % self.work, "dim")
+        except Exception as e:
+            self.log("WARM      打不开工程（%s）—— 等脚本自己开" % e, "warn")
+
     def _poll_starting(self, lines):
         """等脚本开始跑这一段（F-17：40 秒还没动就诊断一次，别让用户对着空窗口等）。"""
         el = self.elapsed
@@ -409,6 +466,8 @@ class Run(object):
     def _poll_running(self, lines, started):
         self.state = State.RUNNING
         el = self.elapsed
+        # 1.1.9 热启动：脚本就位了，轮到我们把工程交给 AE（只交一次）
+        self._warm_tick()
         if el > const.SCRIPT_WAIT_S:
             return self._fail("脚本跑了 %d 分钟还没结束" % int(el // 60), lines, partial=True)
 

@@ -120,6 +120,7 @@ class Ctx(object):
         self.foreign = list(foreign or [])
         self._saved = {}
         self.proc_seq = 7000
+        self.shelled = []          # 1.1.9 热启动：记下我们"双击"过哪些工程（绝不真开文件）
 
     def patch(self, obj, name, value):
         self._saved[(id(obj), name)] = (obj, name, getattr(obj, name))
@@ -147,6 +148,7 @@ class Ctx(object):
         def no_popen(*_a, **_k):
             raise AssertionError("测试里出现了真 subprocess.Popen：打桩漏了一个入口")
 
+        self.patch(runner, "_shell_open", lambda p: self.shelled.append(p))
         self.patch(aehost, "_launch", fake_launch)
         self.patch(aehost, "_sleep", lambda s: None)
         self.patch(aehost, "procs", lambda: list(self.foreign))
