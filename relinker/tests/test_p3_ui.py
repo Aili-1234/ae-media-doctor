@@ -185,7 +185,7 @@ def _():
         need(any("素材收进工程" in str(x) for x in labels),
              "下拉前面应有一句标签说明它是什么：%r" % (labels,))
         # 左列文案（§5 的 2 列排版清单 + 文案精简表）
-        for want in ("只检查", "先复制一份再改", "跑完保存工程"):
+        for want in ("只检查", "修复前先备份原工程", "跑完保存工程"):
             need(any(want in t.lb.cget("text") for t in lt), "缺复选框：%r" % want)
 
 

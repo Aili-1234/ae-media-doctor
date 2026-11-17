@@ -314,9 +314,9 @@ def _():
         need(ctx.closed == [(mine, "跑完关闭")], "关的不是自己那只：%r" % (ctx.closed,))
 
 
-# ----------------------------------------------------------------- F. 复制工程
+# ----------------------------------------------------------------- F. 备份工程（方案甲）
 
-@case("F. 复制工程：默认落到 _fixed.aep，原工程一字节不动")
+@case("F. 方案甲：默认备份原工程到 _backup.aep，脚本直接修原工程")
 def _():
     with Ctx() as ctx:
         before = os.path.getsize(ctx.project)
@@ -324,13 +324,15 @@ def _():
         run = runner.Run(ctx.project, [ctx.material], opt, log=ctx.log,
                          force_mode=aehost.LaunchMode.A2_STARTUP)
         run.start()
-        need(run.copy_path, "没复制")
-        need(os.path.basename(run.copy_path) == "again_fixed.aep",
-             "副本名不对：%r" % os.path.basename(run.copy_path))
-        need(os.path.dirname(run.copy_path) == ctx.projdir, "副本位置不对：%r" % run.copy_path)
-        need(os.path.getsize(ctx.project) == before, "原工程被动了")
-        need(os.path.isfile(run.copy_path), "副本不存在")
-        need(run.work == run.copy_path, "work 没指向副本")
+        need(run.backup_path, "没备份")
+        need(os.path.basename(run.backup_path) == "again_backup.aep",
+             "备份名不对：%r" % os.path.basename(run.backup_path))
+        need(os.path.dirname(run.backup_path) == ctx.projdir, "备份位置不对：%r" % run.backup_path)
+        need(os.path.isfile(run.backup_path), "备份文件不存在")
+        # 关键：work 恒等于原工程（脚本直接修它），不是副本
+        need(run.work == ctx.project, "work 应指向原工程，实际 %r" % run.work)
+        # 备份只是复制了一份，原工程此刻还没被改（脚本没跑）
+        need(os.path.getsize(ctx.project) == before, "原工程在 prepare 阶段就被动了")
 
 
 # ----------------------------------------------------------------- G. CLI 退出码
@@ -355,15 +357,15 @@ def _():
         need(code == 3, "AE 被占应返回 3，实际 %d" % code)
         need("--yes" in text, "没给出 --yes 出口")
 
-    # 4：复制失败
+    # 4：备份失败
     with Ctx() as ctx:
-        ctx.patch(paths, "make_work_copy", lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError("三级都写不进去")))
+        ctx.patch(paths, "make_backup", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("备份写不进去")))
         run_opt = runner.Options(copy_project=True)
         r = runner.Run(ctx.project, [ctx.material], run_opt, log=ctx.log)
         try:
             r.start()
-            raise AssertionError("复制失败却没抛")
+            raise AssertionError("备份失败却没抛")
         except runner.CopyProjectError:
             pass
 

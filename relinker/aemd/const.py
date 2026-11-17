@@ -214,6 +214,10 @@ SAME_CONTENT_SAMPLE = 1024 * 1024        # 只算前 1 MB 的 sha256（整文件
 CONFLICT_TAG = "CONFLICT"                # 撞名撞内容的日志标记
 DUP_SUFFIX = "_2"                        # 不同内容落盘时的改名后缀（_2 / _3 …）
 
+# 1.1.9 方案甲：修复前把原工程备份成 `<名>_backup.aep`，然后**直接在原工程上修**。
+# 备份是还原点，不是"工作副本"——脚本修的永远是用户打开的那个原工程，无副本概念。
+BACKUP_SUFFIX = "_backup"
+
 # D2 报告目录只读 → JSX 里写不进 JSON 时，靠这个键告知 Python「以日志为准」
 REPORT_KEY_LOG_WRITABLE = "logWritable"
 

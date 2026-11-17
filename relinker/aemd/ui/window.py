@@ -697,10 +697,10 @@ class MainWindow(object):
         t_dry = W.Toggle(left, "只检查，不改工程", self.var_dry)
         t_dry.grid(row=0, column=0, sticky="w")
         W.Tip(t_dry, "只报告，不重连、不保存。想先看缺多少条就勾它。")
-        t_copy = W.Toggle(left, "先复制一份再改", self.var_copy)
+        t_copy = W.Toggle(left, "修复前先备份原工程", self.var_copy)
         t_copy.grid(row=1, column=0, sticky="w")
-        W.Tip(t_copy, "在副本上改，原工程一个字节都不动。\n"
-                      "副本放在原工程旁边，放不进去才放到 work 目录。")
+        W.Tip(t_copy, "修复直接改你打开的工程，动手前先备份一份 <名>_backup.aep 当还原点。\n"
+                      "备份放在原工程旁边；不勾则直接改、不留备份。")
 
         # 收编到 Footages：一个下拉说清「做不做 + 怎么做」，不再用「复选框 + 另一个下拉」并列
         crow = tk.Frame(right, bg=T.CARD)

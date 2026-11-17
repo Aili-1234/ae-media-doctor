@@ -223,6 +223,51 @@ def is_forbidden_write(p):
     return False
 
 
+def plan_backup(project_path):
+    """1.1.9 方案甲：备份原工程的落点（只算路径，不复制 —— 复制在 runner）。
+
+    目标名 `<名>_backup.aep`，放在**同目录**。为什么放同目录而不是 work\\：
+    备份是给用户"修坏了能还原"的还原点，放在工程旁边用户才找得到、才敢用。
+    已存在就换带时间戳的名字（同秒撞名由 runner 加 `_2`）。
+    """
+    import datetime
+    p = os.path.abspath(str(project_path))
+    stem, ext = os.path.splitext(p)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return [
+        stem + const.BACKUP_SUFFIX + ext,
+        "%s%s_%s%s" % (stem, const.BACKUP_SUFFIX, stamp, ext),
+    ]
+
+
+def make_backup(project_path, log=None):
+    """1.1.9 方案甲：把原工程复制成 `<名>_backup.aep` 作为还原点，返回备份路径。
+
+    三级退避减到两级（同目录 backup、带时间戳 backup）—— 备份放工程旁才有意义，
+    工程目录整片只读时直接报错让用户知道"这次没法留备份"，而不是悄悄写到别处
+    （写到别处用户找不到，等于没备份）。
+
+    为什么允许覆盖已存在的 `_backup.aep`：那是上一次修复留下的旧备份，本来该被本轮替换。
+    被 AE/杀软按住时 `copy2` 抛 PermissionError [Errno 13] → 换带时间戳名字。
+    """
+    import shutil
+    errs = []
+    for cand in plan_backup(project_path):
+        try:
+            if is_forbidden_write(cand):
+                errs.append("%s -> 落在禁写区（Adobe 安装/插件目录），跳过" % cand)
+                continue
+            ensure_dir(os.path.dirname(cand) or ".")
+            shutil.copy2(project_path, cand)
+            if log:
+                log("BACKUP  已备份原工程到 %s（修复直接改原工程，这份留着还原）"
+                    % os.path.basename(cand))
+            return cand
+        except OSError as e:
+            errs.append("%s -> %s" % (cand, e))
+    raise RuntimeError("备份工程失败：%s" % "；".join(errs))
+
+
 def make_work_copy(project_path, log=None, candidates=None):
     """F-01 的**执行**半边：按 `plan_work_copy` 的三级顺序真复制一份工作副本。
 
@@ -254,4 +299,5 @@ def make_work_copy(project_path, log=None, candidates=None):
 
 __all__ = ["log_dir", "work_dir", "state_dir_of", "jsx_target_path", "ensure_dir",
            "log_path_for", "prune_dir", "prune_logs", "clear_state", "clear_work",
-           "is_ascii_path", "is_forbidden_write", "plan_work_copy", "make_work_copy"]
+           "is_ascii_path", "is_forbidden_write", "plan_work_copy", "make_work_copy",
+           "plan_backup", "make_backup"]

@@ -154,8 +154,9 @@ class Run(object):
 
         # 下面这些在 start() 里填好
         self.state = State.PENDING
-        self.work = ""             # 真正被脚本打开的工程（可能是 _fixed.aep 副本）
-        self.copy_path = ""        # 复制出来的工程（没复制则空）
+        self.work = ""             # 脚本要修的工程 —— 方案甲后恒等于原工程（不再有 _fixed 副本）
+        self.copy_path = ""        # 保留旧字段兼容（已废弃，指向空）
+        self.backup_path = ""      # 备份路径（还原点；没备份则空）
         self.state_dir = ""
         self.log_path = ""
         self.jsx_path = ""
@@ -197,6 +198,11 @@ class Run(object):
 
         预扫描失败**不算失败**（v1.9.8 也一样：只记一行，脚本里还会再扫一遍）。
         """
+        # 1.1.9 附着模式要先定下来：显式 attach，或走手动模式（用户 Run Script File），
+        # 脚本都绝不 app.open()。必须在复制工程**之前**算好 —— 手动模式不复制副本，
+        # 脚本直接对用户已打开的工程跑修复。
+        self.attach = bool(self.opt.attach) or (self.force_mode is aehost.LaunchMode.MANUAL)
+
         if not self.project or not os.path.isfile(self.project):
             raise ValueError("工程文件不存在：%s" % (self.project or "（空）"))
 
@@ -213,15 +219,18 @@ class Run(object):
             if self.roots:
                 self.log("SCAN    自动推断素材目录 %d 个" % len(self.roots), "dim")
 
-        # ① 复制工程（可选）—— 三级退避，绝不动用户的原工程
+        # ① 备份原工程（可选）—— 方案甲：修复**直接改用户打开的原工程**，先备份一份当还原点。
+        # 为什么改成"备份"而不是"复制副本再修副本"：用户来找拾链时打开的就是原工程，
+        # 他最想看到的是"我眼前这个工程被治好"；再搞一个 _fixed 副本让用户去开，是多余的心智负担，
+        # 而且手动模式下副本路径跟用户打开的工程对不上（2026-11-17 真机踩到）。
+        # 所以：脚本修的永远是 self.work == 原工程；备份只是还原点，不参与修复。
         self.work = self.project
+        self.backup_path = ""
         if self.opt.copy_project and not self.opt.dry:
             try:
-                self.copy_path = paths.make_work_copy(self.project, log=self.log)
-                self.work = self.copy_path
-                self.log("COPY    已复制到 %s（原工程不动）" % self.work, "dim")
+                self.backup_path = paths.make_backup(self.project, log=self.log)
             except RuntimeError as e:
-                raise CopyProjectError("复制工程失败：%s" % e)
+                raise CopyProjectError("备份工程失败：%s" % e)
 
         # ② 路径三件套：工程旁的结果目录、软件自己的日志与临时目录
         out_dir = os.path.dirname(os.path.abspath(self.work))
@@ -251,9 +260,6 @@ class Run(object):
         # 1.1.9 热启动能不能用：得看这台机器上 A2（Startup 目录）这条路通不通 ——
         # 只有 A2 才谈得上"先起 AE、再交工程"，`-r`/手动那两条不是这个节奏。
         self.warm = bool(self.opt.warm_open) and self._can_warm()
-        # 1.1.9 附着模式：显式 attach，或走手动模式（用户 Run Script File）时，
-        # 脚本都绝不 app.open() —— 用户自己开工程，脚本只对当前工程跑修复。
-        self.attach = bool(self.opt.attach) or (self.force_mode is aehost.LaunchMode.MANUAL)
         # ④ 生成 JSX 并落到唯一合法目录（R9：非 ASCII 路径会毁掉一切）
         # 1.1.0：先把手工映射表读出来塞进脚本。表坏了 / 没有都只是空表（mapping.load 不抛），
         # 所以「读映射失败」永远不会变成「本次跑不了」。
