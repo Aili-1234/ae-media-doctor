@@ -493,6 +493,54 @@ def press_startup_prompts(pid, seen=None, log=None):
     return n
 
 
+#: 陌生模态框一轮最多按几个。认识的框（崩溃修复 / 缺素材 / 进度框）各有专线，
+#: 这里只管"其余有标题的 #32770"，额度给小 —— 按多了反而容易踩到不该动的框。
+UNKNOWN_DIALOG_MAX = 2
+
+
+def dismiss_unknown_dialogs(pid, seen=None, log=None):
+    """把「不认识的模态框」用 Esc 关掉，并把标题写进日志。
+
+    2026-11-17 真机：AE 打开工程时弹了一个「设置窗口」（自绘、无原生按钮），
+    把主窗口压住，脚本卡在 `app.open()` 出不来 —— 日志一个字都不写，
+    程序只说"有窗口挡着"，用户在批量跑的时候根本没法处置。
+
+    三条例外（各有专线，这里不抢）：
+      · 空标题 -> 「崩溃修复选项」那条线
+      · 文字命中缺素材关键词 -> `dismiss_missing_dialogs`
+      · 标题是进度框 -> `dismiss_progress_dialogs`
+    其余一律 Esc：只取消、不提交，不会改设置、不会删工程。
+    """
+    emit = log or (lambda s, tag=None: None)
+    if not pid:
+        return 0
+    booked = seen if seen is not None else set()
+    try:
+        wins = [w for w in winproc.windows_of(pid) if w.get("visible")]
+    except Exception:
+        return 0
+    n = 0
+    for w in wins:
+        if n >= UNKNOWN_DIALOG_MAX:
+            break
+        if (w.get("cls") or "") != "#32770":
+            continue
+        title = (w.get("title") or "").strip()
+        if not title or w["hwnd"] in booked:
+            continue
+        blob = (title + " " + " ".join(winproc.dialog_child_texts(w["hwnd"], limit=12))).lower()
+        if any(k.lower() in blob for k in winproc.MISSING_DIALOG_KEYWORDS):
+            continue
+        if title in const.STARTUP_PROGRESS_TITLES:
+            continue
+        booked.add(w["hwnd"])
+        if winproc.press_escape(w["hwnd"]):
+            n += 1
+            emit("A2      有个不认识的框挡在前面：「%s」，已按 Esc 关掉"
+                 "（Esc 只取消，不改任何设置）" % title, "warn")
+    return n
+
+
 def dismiss_progress_dialogs(pid, seen=None, log=None):
     """按掉 AE 自己的启动期进度框（「解析字体」「打开项目」），返回按掉几个。
 

@@ -563,6 +563,55 @@ def _():
         shutil.rmtree(d, ignore_errors=True)
 
 
+@case("M. AE 中途退出：连续两次查不到 AfterFX 就判失败，不白等 10 分钟")
+def _():
+    """2026-11-17 真机：AE 退出后 CLI 又傻等 5 分钟，最后是人手动停掉的。
+
+    脚本跑起来之后，旧逻辑只看 SCRIPT_WAIT_S=600 秒。AE 都没了，脚本不可能再写完。
+    判据用「有没有任何 AfterFX」而不是 pid：AE 崩溃修复后会自己重启，pid 会变。
+    """
+    ctx = Ctx()
+    with ctx:
+        run = make_run(ctx)
+        run.start()
+        run.state = runner.State.RUNNING
+        run.log_path = os.path.join(ctx.logdir, "_never_created.log")
+        old = aehost.procs
+        aehost.procs = lambda: []
+        try:
+            run._alive_at = 0.0
+            ctx.tick(10)
+            # 直接打运行期那段：poll() 会先按 marker 判"脚本开没开始"，这里要测的
+            # 就是「已经开始跑了、然后 AE 没了」
+            p1 = run._poll_running([], True)
+            need(p1.state is runner.State.RUNNING,
+                 "只查一次不算数（可能正好在重启），实得 %r" % (p1.state,))
+            ctx.tick(16)
+            p2 = run._poll_running([], True)
+        finally:
+            aehost.procs = old
+        need(p2.state is runner.State.FAILED, "连续两次没有 AE 应当判失败，实得 %r" % (p2.state,))
+        need("AE 进程已经不在了" in (p2.message or ""), "失败原因要说人话：%r" % (p2.message,))
+
+        # 反向：AE 一直在（哪怕 pid 变了）就不许误判
+        ctx2 = Ctx()
+        with ctx2:
+            run2 = make_run(ctx2)
+            run2.start()
+            run2.state = runner.State.RUNNING
+            run2.log_path = os.path.join(ctx2.logdir, "_never_created.log")
+            aehost.procs = lambda: [(999, "whatever")]
+            try:
+                run2._alive_at = 0.0
+                ctx2.tick(10)
+                run2._poll_running([], True)
+                ctx2.tick(16)
+                p3 = run2._poll_running([], True)
+            finally:
+                aehost.procs = old
+            need(p3.state is runner.State.RUNNING, "AE 在跑却判失败（会误杀）：%r" % (p3.state,))
+
+
 def main():
     total = len(PASS) + len(FAIL)
     print("")

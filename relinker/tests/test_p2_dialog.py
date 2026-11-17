@@ -296,5 +296,72 @@ class MissingFootageDialogTest(unittest.TestCase):
         self.assertTrue(any("还在" in s for s in logs), "要如实记一句「按了但还在」：%r" % logs)
 
 
+class UnknownDialogTest(unittest.TestCase):
+    """1.1.7：不认识的模态框用 Esc 关掉，并把标题说出来。
+
+    2026-11-17 真机：AE 打开工程时弹了一个「设置窗口」（自绘、没有原生按钮），
+    把主窗口压住，脚本卡在 app.open() 出不来 —— 日志一个字都不写。
+    以前程序只说"有窗口挡着"，不说是哪个框，用户批量跑的时候无从处置。
+    """
+
+    def _stub(self, wins, texts=None, pressed=None):
+        orig = (winproc.windows_of, winproc.dialog_child_texts, winproc.press_escape)
+        winproc.windows_of = lambda pid: list(wins)
+        winproc.dialog_child_texts = lambda hwnd, limit=12: list((texts or {}).get(hwnd, []))
+        winproc.press_escape = lambda hwnd: (pressed.append(hwnd), True)[1]
+        return orig
+
+    def test_L_escs_unknown_titled_dialog(self):
+        """L：有标题的陌生框 -> Esc 一次，日志里要有那个标题。"""
+        pressed, logs = [], []
+        wins = [{"hwnd": 71, "cls": "#32770", "title": "设置窗口", "visible": True}]
+        orig = self._stub(wins, pressed=pressed)
+        try:
+            n = aehost.dismiss_unknown_dialogs(1234, set(), lambda s, tag=None: logs.append(s))
+        finally:
+            winproc.windows_of, winproc.dialog_child_texts, winproc.press_escape = orig
+        self.assertEqual((n, pressed), (1, [71]), "应当按一次 Esc")
+        self.assertTrue(any("设置窗口" in s for s in logs), "日志必须写出框标题：%r" % logs)
+        self.assertTrue(any("Esc" in s for s in logs), "要说明用的是 Esc")
+
+    def test_M_skips_known_dialogs(self):
+        """M：空标题（崩溃框）/ 进度框 / 缺素材框 —— 一个都不碰（各有专线）。"""
+        pressed = []
+        wins = [
+            {"hwnd": 81, "cls": "#32770", "title": "", "visible": True},
+            {"hwnd": 82, "cls": "#32770", "title": "打开项目", "visible": True},
+            {"hwnd": 83, "cls": "#32770", "title": "缺少文件", "visible": True},
+            {"hwnd": 84, "cls": "AE_CApplication_25.3", "title": "主窗口", "visible": True},
+        ]
+        texts = {83: ["3 files are missing"]}
+        orig = self._stub(wins, texts, pressed)
+        try:
+            n = aehost.dismiss_unknown_dialogs(1234, set(), lambda s, tag=None: None)
+        finally:
+            winproc.windows_of, winproc.dialog_child_texts, winproc.press_escape = orig
+        self.assertEqual((n, pressed), (0, []), "认识的框不该在这里被按：%r" % (pressed,))
+
+    def test_N_capped_and_once(self):
+        """N：每个 hwnd 只按一次，单轮不超过 UNKNOWN_DIALOG_MAX；下一轮继续清剩下的。
+
+        额度是"每轮"而不是"总共"：AE 真弹了 5 个陌生框时要能一个个清完，
+        但同一个框绝不回头再按（否则就是对着空气反复敲 Esc）。
+        """
+        pressed = []
+        wins = [{"hwnd": 90 + i, "cls": "#32770", "title": "怪框%d" % i, "visible": True}
+                for i in range(5)]
+        orig = self._stub(wins, pressed=pressed)
+        try:
+            booked = set()
+            rounds = [aehost.dismiss_unknown_dialogs(1234, booked, lambda s, tag=None: None)
+                      for _ in range(4)]
+        finally:
+            winproc.windows_of, winproc.dialog_child_texts, winproc.press_escape = orig
+        self.assertEqual(rounds[0], aehost.UNKNOWN_DIALOG_MAX, "第一轮应当按到上限")
+        self.assertEqual(rounds[-1], 0, "清完之后不许再来一遍")
+        self.assertEqual(len(pressed), 5, "5 个框一共按 5 次，实得 %r" % (pressed,))
+        self.assertEqual(len(set(pressed)), 5, "同一个 hwnd 不许按两次：%r" % (pressed,))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -400,6 +400,32 @@ def press_enter(hwnd):
         return False
 
 
+def press_escape(hwnd):
+    """给窗口发一次 Esc（= 取消 / 关闭，**不提交任何修改**）。
+
+    为什么是 Esc 而不是别的：陌生模态框可能是「是否替换」「是否保存」「是否删除」——
+    只有 Esc 在所有这类框上都等于"什么都不做"。输入策略与 `press_enter` 一致：
+    能拿到前台就发真实按键（自绘框只认这个），拿不到才退回 PostMessage。
+    """
+    try:
+        u = ctypes.windll.user32
+        try:
+            u.SetForegroundWindow(wt.HWND(hwnd))
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if u.GetForegroundWindow() == hwnd:
+            u.keybd_event(0x1B, 0, 0, 0)          # VK_ESCAPE down
+            time.sleep(0.04)
+            u.keybd_event(0x1B, 0, 0x0002, 0)     # up
+            return True
+        u.PostMessageW(wt.HWND(hwnd), 0x0100, 0x1B, 0)
+        u.PostMessageW(wt.HWND(hwnd), 0x0101, 0x1B, 0)
+        return True
+    except Exception:
+        return False
+
+
 def still_open(hwnd, timeout_ms=900):
     """这个对话框**现在还在不在**（`SendMessageTimeout` 超时也算「在」——它只是卡着）。
 

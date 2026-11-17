@@ -154,6 +154,8 @@ class Run(object):
         self.total_items = 0       # 工程里素材总条数（ITEMS 行给出的）
         self._diag_done = False
         self._hung_logged = False
+        self._alive_at = 0.0        # 上次查「AE 还在不在」的时刻（节流用）
+        self._ae_gone = 0           # 连续几次查不到 AE
         self._diag = {}
         self._prompt_seen = set()  # 已经按过回车的「崩溃修复选项」窗口
         self.cancelled = False
@@ -311,6 +313,8 @@ class Run(object):
             aehost.press_startup_prompts(pid, self._prompt_seen, self.log)
             # 1.1.1：打开工程时的「缺素材」提示框也会把 app.open() 卡住，一并按掉
             aehost.dismiss_missing_dialogs(pid, self._prompt_seen, self.log)
+            # 1.1.7：不认识的框（如「设置窗口」）只会把 open 卡死，Esc 掉并报出标题
+            aehost.dismiss_unknown_dialogs(pid, self._prompt_seen, self.log)
             aehost.dismiss_progress_dialogs(pid, self._prompt_seen, self.log)
 
         started = bool(self.log_path) and os.path.exists(self.log_path)
@@ -395,6 +399,21 @@ class Run(object):
         el = self.elapsed
         if el > const.SCRIPT_WAIT_S:
             return self._fail("脚本跑了 %d 分钟还没结束" % int(el // 60), lines, partial=True)
+
+        # 1.1.7：AE 都没了还在等脚本，只会白等 10 分钟
+        # （2026-11-17 真机实测：AE 退出后 CLI 又傻等 5 分钟，最后是人手动停掉的）。
+        # 判据用「有没有任何 AfterFX」而不是「我们那只 pid 还在不在」：
+        # AE 崩溃修复后会自己重启，pid 会变，按 pid 判会误杀。
+        if _now() - self._alive_at >= self._ALIVE_EVERY_S:
+            self._alive_at = _now()
+            try:
+                alive = bool(aehost.procs())
+            except Exception:
+                alive = True
+            self._ae_gone = 0 if alive else (self._ae_gone + 1)
+        if self._ae_gone >= self._ALIVE_GONE_LIMIT:
+            return self._fail("AE 进程已经不在了（脚本没跑完），这次没接上 —— 日志最后一行是它停的地方",
+                              lines, partial=True)
         if self.total_items:
             txt = "正在重连… %d/%d  %ds" % (self.done_items, self.total_items, int(el))
         else:
@@ -402,6 +421,10 @@ class Run(object):
         return Poll(State.RUNNING, el, lines, limit_s=const.SCRIPT_WAIT_S, status_text=txt)
 
     # ------------------------------------------------------------ 结算
+
+    #: 1.1.7：AE 存活探测的节流与判据（见 _poll_running）
+    _ALIVE_EVERY_S = 5.0
+    _ALIVE_GONE_LIMIT = 2
 
     #: 需要提到结果区的日志标签（1.1.7）。只收「接上了、但可能有问题」这一类 ——
     #: 用户不必翻日志就知道手上这份结果有几处要自己核。
