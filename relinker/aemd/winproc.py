@@ -32,6 +32,7 @@
    → err=5 一律按「可能活着」处理（返回 True），并在 `last_error()` 里留痕给诊断包。
    ⚠ 注意：**别用** `err != 0 → alive` 这种一刀切写法，那会把不存在/无效 PID
      （err=87 ERROR_INVALID_PARAMETER）也算活着，流程同样卡住。
+     err=6（句柄无效，进程已退）这类也一样：判死才对。
 4) 最小化窗口的 rect 是 -32000：有的老代码拿 `GetWindowRect` 判断「窗口有效」，
    最小化的 AE 会得到 (-32000,-32000)，被误判成「没有窗口」，进而被当残留处理。
    → 判窗口有效性只看 `IsWindowVisible` + 有 owner/标题（见 `_visible_pids`），
@@ -123,8 +124,10 @@ def is_alive(pid):
         _LAST_ERROR["pid"], _LAST_ERROR["err"] = pid, err
         if err == _ERROR_INVALID_PARAMETER:
             return False          # 这个 PID 根本不存在
-        # err=5（权限不够，多半是管理员身份的 AE）或其它异常：按「可能活着」处理
-        return True
+        # 只有"权限不够"（管理员身份的 AE）才按「可能活着」处理；
+        # 其余错误（句柄无效 err=6 等）说明进程其实已经不在了，判死 ——
+        # 一刀切「err!=0 → 活着」会把已退出的进程也当活着，流程照样卡住。
+        return err == _ERROR_ACCESS_DENIED
     try:
         return k32.WaitForSingleObject(h, 0) == _WAIT_TIMEOUT
     finally:
@@ -364,6 +367,9 @@ PLUGIN_BLOCK_CLASSES = ("VCWINDOW",)
 PLUGIN_BLOCK_TITLES = ("Optical Flares", "Video Copilot")
 
 
+_PLUGIN_SIGNS_CACHE = {"mtime": None, "signs": None}
+
+
 def _extra_plugin_signs():
     """从「卡死插件名单」文件里读用户 / 维护者后来加进去的插件特征（类名或标题）。
 
@@ -374,19 +380,33 @@ def _extra_plugin_signs():
     文件：`%APPDATA%\\AE素材医生\\plugin_block_signs.txt`，每行一个特征，
     `#` 开头是注释。命中任意一行就算卡死嫌疑（类名或标题包含都算）。
     文件不存在 / 读不了 / 是坏内容，一律当没有 —— 绝不因此报错、也绝不误判。
+
+    ⚠ 结果带缓存（按 mtime）：这个函数在 poll() 热路径里被反复调（每拍几次），
+    每次重读文件是纯浪费。文件没变就复用上次结果；变了（用户刚加了一行）下一拍生效。
     """
     try:
         import os
         from . import const
         p = os.path.join(const.APP_HOME, "plugin_block_signs.txt")
         if not os.path.isfile(p):
+            _PLUGIN_SIGNS_CACHE["mtime"] = None
+            _PLUGIN_SIGNS_CACHE["signs"] = None
             return []
+        try:
+            mtime = os.path.getmtime(p)
+        except OSError:
+            mtime = None
+        if mtime is not None and _PLUGIN_SIGNS_CACHE["mtime"] == mtime \
+                and _PLUGIN_SIGNS_CACHE["signs"] is not None:
+            return _PLUGIN_SIGNS_CACHE["signs"]
         out = []
         with open(p, encoding="utf-8", errors="replace") as fh:
             for ln in fh:
                 s = ln.strip()
                 if s and not s.startswith("#"):
                     out.append(s)
+        _PLUGIN_SIGNS_CACHE["mtime"] = mtime
+        _PLUGIN_SIGNS_CACHE["signs"] = out
         return out
     except Exception:
         return []
@@ -545,11 +565,24 @@ def click_continue(hwnd):
     枚举不到按钮），键盘两条路都不稳 —— `PostMessage(WM_KEYDOWN)` 有时被吞，
     `SetForegroundWindow` 会被前台锁挡掉。2026-11-17 实测：真实鼠标点击一次就过。
 
-    安全口径：先点**标题栏**激活（正文一个像素都不碰，不会误选「安全模式 / 重置首选项」），
-    再按比例点「继续」。点完把光标放回原处。
+    安全口径（2026-11-17 加严）：
+      · 真实鼠标点击是**全局动作**，会抢走用户正在用的光标。所以点击前必须先确认
+        这个崩溃框**就是前台窗口**（用户此刻正看着它），否则一个像素都不碰、
+        返回 False —— 绝不在用户操作别的窗口时乱移他的鼠标。
+      · 先点**标题栏**激活（正文一个像素都不碰，不会误选「安全模式 / 重置首选项」），
+        再按比例点「继续」。点完把光标放回原处。
     """
     try:
         u = ctypes.windll.user32
+        # ① 先确认/抢占前台：不成功就不碰鼠标
+        try:
+            u.SetForegroundWindow(wt.HWND(hwnd))
+        except Exception:
+            pass
+        time.sleep(0.05)
+        if u.GetForegroundWindow() != hwnd:
+            return False          # 前台不是这个框（用户在用别的窗口）—— 绝不抢鼠标
+
         r = wt.RECT()
         if not u.GetWindowRect(wt.HWND(hwnd), ctypes.byref(r)):
             return False

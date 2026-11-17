@@ -108,12 +108,25 @@ def find_es():
 
 # ------------------------------------------------------------------ 服务 / 客户端
 
+#: `_cim_everything()` 的结果缓存（短 TTL）。client_pids / service_pids 在
+#: ensure_ready 的等待循环里会被反复调，每次都冷启动一个 PowerShell（~500ms-1s）
+#: 是纯浪费。缓存 2 秒：既避免反复冷启动，又不会因为缓存太久而漏掉「刚启动的客户端」。
+_CIM_CACHE = {"at": 0.0, "rows": None}
+_CIM_TTL = 2.0
+
+
 def _cim_everything():
     """一次 CIM 查询拿到全部 everything.exe 的 (pid, session, path, cmdline)。
 
     比一代分两次 powershell 便宜，也让"服务 vs 客户端"的判据集中在一个地方。
     拿不到（非管理员、PowerShell 被策略禁、超时）→ []。
+
+    ⚠ 结果带短 TTL 缓存（`_CIM_TTL` 秒内复用）：这是 ensure_ready 热路径，
+    反复起 PowerShell 开销大。缓存只在「最近一次成功」时生效 —— 失败（返回 []）
+    不缓存，下一拍重试（PowerShell 被策略禁时反复失败是另一回事，有 timeout 兜底）。
     """
+    if _CIM_CACHE["rows"] is not None and (time.time() - _CIM_CACHE["at"]) < _CIM_TTL:
+        return _CIM_CACHE["rows"]
     ps = ("Get-CimInstance Win32_Process -Filter \"Name='everything.exe'\" | "
           "ForEach-Object { \"{0}`t{1}`t{2}`t{3}\" -f $_.ProcessId, $_.SessionId, "
           "$_.ExecutablePath, $_.CommandLine }")
@@ -135,6 +148,8 @@ def _cim_everything():
                      "session": int(sess) if sess.lstrip("-").isdigit() else None,
                      "path": path,
                      "cmdline": cmd})
+    _CIM_CACHE["at"] = time.time()
+    _CIM_CACHE["rows"] = rows
     return rows
 
 
