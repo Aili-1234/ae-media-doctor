@@ -65,6 +65,7 @@ MOVED_TXT = "_relink_moved.txt"
 JSX_TARGET_DIR = r"C:\ProgramData\AEMediaDoctor"
 WORK_JSX = "_media_doctor.jsx"               # 手动模式的脚本副本，落 WORK_DIR
 WORK_INDEX_JSON = "_media_index.json"        # 预扫描索引，落 WORK_DIR
+WORK_INDEX_LINES = "_media_index.lines"      # 1.1.9 扁平化安全索引（JSX 优先读，免 eval）
 MANUAL_JSX = "manual_fix.jsx"
 
 # ---------------------------------------------------------------- A2 Startup 注入（R4）

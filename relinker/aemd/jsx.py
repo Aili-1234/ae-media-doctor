@@ -386,6 +386,9 @@ try {
         L("OPEN      " + CFG.project);""",
      r"""    if (!proj || !proj.file || dec(proj.file.fsName) !== dec(want.fsName)){
         L("OPEN      " + CFG.project);"""),
+    # 1.1.9 安全：loadPyIndex 优先读扁平 .lines（免 eval），退回才 eval JSON（新增，对拍时替回旧版）
+    ('function loadPyIndex(){\n    /* 1.1.9 安全：优先读扁平化的 .lines（逐行 split，零 eval 风险）。\n       读不到（旧版 scanner 只写了 JSON）才退回 eval 读 JSON —— 那一步只在\n       Python 侧自己生成的 JSON 上发生，风险面已收窄。 */\n    var lf = new File(WORK + "/_media_index.lines");\n    if (lf.exists){\n        try {\n            lf.encoding = "UTF-8";\n            lf.open("r");\n            var ltxt = lf.read();\n            lf.close();\n            var linesArr = ltxt.split("\\n");\n            var i, parts, kind, key, path;\n            for (i = 0; i < linesArr.length; i++){\n                parts = linesArr[i].split("\\t");\n                if (parts.length < 2) continue;\n                kind = parts[0];\n                if (kind === "count"){\n                    scanned = parseInt(parts[1], 10) || 0;\n                } else if (kind === "exact" && parts.length >= 3){\n                    key = parts[1]; path = parts.slice(2).join("\\t");\n                    if (!idxExact[key]) idxExact[key] = [];\n                    idxExact[key].push(path);\n                } else if (kind === "short" && parts.length >= 3){\n                    key = parts[1]; path = parts.slice(2).join("\\t");\n                    if (!idxShort[key]) idxShort[key] = [];\n                    idxShort[key].push(path);\n                }\n            }\n            return true;\n        } catch(e){ L("INDEX-ERR " + e.toString()); }\n        return false;\n    }\n    var f = new File(WORK + "/_media_index.json");\n    if (!f.exists) return false;\n    try {\n        f.encoding = "UTF-8";\n        f.open("r");\n        var txt = f.read();\n        f.close();\n        var d = eval("(" + txt + ")");\n        if (d && d.exact && d.short){\n            idxExact = d.exact; idxShort = d.short; scanned = d.count || 0;\n            return true;\n        }\n    } catch(e){ L("INDEX-ERR " + e.toString()); }\n    return false;\n}\n',
+     'function loadPyIndex(){\n    var f = new File(WORK + "/_media_index.json");\n    if (!f.exists) return false;\n    try {\n        f.encoding = "UTF-8";\n        f.open("r");\n        var txt = f.read();\n        f.close();\n        var d = eval("(" + txt + ")");\n        if (d && d.exact && d.short){\n            idxExact = d.exact; idxShort = d.short; scanned = d.count || 0;\n            return true;\n        }\n    } catch(e){ L("INDEX-ERR " + e.toString()); }\n    return false;\n}\n'),
     # 1.1.9：末尾启动器（主体已包成 aemdRunAll，多了收尾的 } 与热启动等待器）
     ('    L("DONE-OK");\n    flush();\n} catch (e){\n    L("FATAL " + e.toString() + " line " + e.line);\n    try { flush(); } catch (e2) {}\n}\n}\n\n/* ===== 1.1.9 启动器 =====\n   热启动（warmOpen）：脚本先只把日志建好（宿主据此判「脚本已就位」），\n   然后每半秒看一眼工程开了没有 —— 工程由宿主用 ShellExecute 交给 AE（等同双击）。\n   为什么要绕这一圈：冷启动就 app.open() 会撞上插件自己弹的窗口（真机是 Optical Flares），\n   AE 主线程在两个等待里互锁，停在「打开项目 0%」再也不动；等 AE 完全起来、消息循环在转，\n   同样的打开动作就能过去（用户手动一直是这么做的）。\n   冷启动：直接跑，一个字节都不变。 */\nvar aemdWarmN = 0;\nvar aemdWarmId = 0;\nvar aemdWarmDone = false;\n\nfunction aemdWarmTick(){\n    if (aemdWarmDone) return;\n    aemdWarmN++;\n    var hit = false;\n    try {\n        var p = app.project;\n        var want = new File(CFG.project);\n        hit = !!(p && p.file && dec(p.file.fsName) === dec(want.fsName));\n    } catch(e){ hit = false; }\n    if (hit){\n        aemdWarmDone = true;\n        try { if (aemdWarmId) app.cancelTask(aemdWarmId); } catch(e){}\n        aemdRunAll();\n        return;\n    }\n    if (aemdWarmN > CFG.warmWait * 2){\n        aemdWarmDone = true;\n        try { if (aemdWarmId) app.cancelTask(aemdWarmId); } catch(e){}\n        L("FATAL 等工程打开超时（" + CFG.warmWait + " 秒）：宿主没能把工程交给 AE，或者工程被弹窗挡住了");\n        flush();\n    }\n}\n\nif (CFG.warmOpen){\n    L("WARM      脚本已就位，等宿主把工程交给 AE 打开（最多 " + CFG.warmWait + " 秒）");\n    try {\n        aemdWarmId = app.scheduleTask("aemdWarmTick()", 500, true);\n    } catch(e){\n        L("WARM-ERR  排不进定时器（" + e.toString() + "）—— 退回老做法，自己开工程");\n        aemdRunAll();\n    }\n} else {\n    aemdRunAll();\n}\n',
      '    L("DONE-OK");\n    flush();\n} catch (e){\n    L("FATAL " + e.toString() + " line " + e.line);\n    try { flush(); } catch (e2) {}\n}\n'),
@@ -642,6 +645,38 @@ var T0 = (new Date()).getTime();
 function T(tag){ L("TIME      " + tag + "  +" + (((new Date()).getTime() - T0) / 1000).toFixed(1) + "s"); }
 
 function loadPyIndex(){
+    /* 1.1.9 安全：优先读扁平化的 .lines（逐行 split，零 eval 风险）。
+       读不到（旧版 scanner 只写了 JSON）才退回 eval 读 JSON —— 那一步只在
+       Python 侧自己生成的 JSON 上发生，风险面已收窄。 */
+    var lf = new File(WORK + "/_media_index.lines");
+    if (lf.exists){
+        try {
+            lf.encoding = "UTF-8";
+            lf.open("r");
+            var ltxt = lf.read();
+            lf.close();
+            var linesArr = ltxt.split("\n");
+            var i, parts, kind, key, path;
+            for (i = 0; i < linesArr.length; i++){
+                parts = linesArr[i].split("\t");
+                if (parts.length < 2) continue;
+                kind = parts[0];
+                if (kind === "count"){
+                    scanned = parseInt(parts[1], 10) || 0;
+                } else if (kind === "exact" && parts.length >= 3){
+                    key = parts[1]; path = parts.slice(2).join("\t");
+                    if (!idxExact[key]) idxExact[key] = [];
+                    idxExact[key].push(path);
+                } else if (kind === "short" && parts.length >= 3){
+                    key = parts[1]; path = parts.slice(2).join("\t");
+                    if (!idxShort[key]) idxShort[key] = [];
+                    idxShort[key].push(path);
+                }
+            }
+            return true;
+        } catch(e){ L("INDEX-ERR " + e.toString()); }
+        return false;
+    }
     var f = new File(WORK + "/_media_index.json");
     if (!f.exists) return false;
     try {

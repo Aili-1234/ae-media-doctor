@@ -33,7 +33,7 @@ import time
 from . import const
 from .const import (FORBIDDEN_WRITE_PREFIXES, ILLEGAL_FILENAME_CHARS, JSX_TARGET_DIR,
                     LOG_DIR, LOG_KEEP, MANUAL_JSX, REPORT_FILES, STATE_DIRNAME,
-                    WORK_DIR, WORK_INDEX_JSON, WORK_JSX)
+                    WORK_DIR, WORK_INDEX_JSON, WORK_INDEX_LINES, WORK_JSX)
 
 # ⚠ 三个目录常量在函数里一律走 `const.XXX`，不要用上面 import 进来的那份快照：
 #   快照在 import 时就固定了，测试把它改掉（临时目录）不会生效，会出现「日志写到了
@@ -165,7 +165,7 @@ def clear_work():
 
     日志不在 work\\（R8：日志进 logs\\），所以这个函数不碰日志。
     """
-    for name in (WORK_JSX, WORK_INDEX_JSON, MANUAL_JSX):
+    for name in (WORK_JSX, WORK_INDEX_JSON, WORK_INDEX_LINES, MANUAL_JSX):
         try:
             os.remove(os.path.join(WORK_DIR, name))
         except OSError:

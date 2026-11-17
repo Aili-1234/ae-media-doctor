@@ -292,13 +292,19 @@ def ensure_ready(log=None, wait_client_s=12, wait_admin_s=20):
 
 # ------------------------------------------------------------------ 查找 / 关闭
 
-def lookup(names, timeout_per=20):
+def lookup(names, timeout_per=20, max_workers=8):
     """用 es.exe 在整机范围找缺失素材名 → {小写名: [路径…]}。
 
     只返回**真实存在**的文件路径（`os.path.isfile` 复核）：es 的索引可能是旧的，
     索引里有、磁盘上已经删掉的情况很常见。
     没有 es.exe 时返回 {}（P2 补 PowerShell 兜底；一代那条路在本机从未被走到）。
+
+    ⚠ 并行化（2026-11-17 性能加固）：缺件多时逐个串行起 es.exe 很慢（每个 ~50-200ms，
+    200 个 = 10-40 秒）。这里用线程池并行查询，**每个名字的查询方式不变**（还是单独的
+    `es.exe -n 20 -a <名>`）——不碰 es 的 OR/正则语法，因为那些在本机没法真机验证，
+    盲改风险高。并行只改"调度"，不改"语义"，结果与串行逐字节一致。
     """
+    from concurrent.futures import ThreadPoolExecutor
     names = [n for n in dict.fromkeys(names or []) if n and n.strip()]
     hits = {}
     if not names:
@@ -306,17 +312,39 @@ def lookup(names, timeout_per=20):
     es = find_es()
     if not es:
         return hits
-    for n in names:
+
+    def _one(n):
         try:
             r = subprocess.run([es, "-n", "20", "-a", n], capture_output=True,
                                creationflags=_NOWINDOW, timeout=timeout_per)
             txt = (r.stdout or b"").decode("mbcs", "ignore")
         except Exception:
-            continue
+            return n.lower(), []
+        out = []
         for line in txt.splitlines():
             line = line.strip().strip('"')
             if line and os.path.isfile(line):
-                hits.setdefault(n.lower(), []).append(line)
+                out.append(line)
+        return n.lower(), out
+
+    if len(names) == 1:
+        k, v = _one(names[0])
+        if v:
+            hits[k] = v
+        return hits
+
+    workers = min(max_workers, len(names))
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for k, v in ex.map(_one, names):
+                if v:
+                    hits.setdefault(k, []).extend(v)
+    except Exception:
+        # 线程池异常（几乎不会）时退回串行，保底不丢结果
+        for n in names:
+            k, v = _one(n)
+            if v:
+                hits.setdefault(k, []).extend(v)
     return hits
 
 

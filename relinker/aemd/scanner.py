@@ -95,6 +95,30 @@ def build_index(roots, depth, out_path):
     with io.open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False)
     os.replace(tmp, out_path)
+
+    # 1.1.9 安全：额外写一份**扁平化、逐行、无嵌套**的 `.lines`，给 JSX 安全解析用。
+    # 为什么：JSON 版本 JSX 用 eval 读（AE 2020-2021 无 JSON.parse），eval 是任意代码通道。
+    # `.lines` 每行一个条目、tab 分隔，JSX 用 split 逐行读，零 eval 风险。
+    # 行格式：`exact\t<名字>\t<路径>` / `short\t<键>\t<路径>` / `count\t<N>`
+    # tab 是 Windows 文件名的非法字符，路径里不可能出现，用它当分隔符安全。
+    lines_tmp = out_path + ".lines.tmp"
+    lines_out = os.path.join(os.path.dirname(out_path), const.WORK_INDEX_LINES)
+    try:
+        with io.open(lines_tmp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("count\t%d\n" % count)
+            for k in exact:
+                for p in exact[k]:
+                    fh.write("exact\t%s\t%s\n" % (k, p))
+            for k in short:
+                for p in short[k]:
+                    fh.write("short\t%s\t%s\n" % (k, p))
+        os.replace(lines_tmp, lines_out)
+    except OSError:
+        # .lines 写不出来不影响主流程（JSON 还在，JSX 会退回 eval 读 JSON）
+        try:
+            os.remove(lines_tmp)
+        except OSError:
+            pass
     return count
 
 
