@@ -713,6 +713,32 @@ def _():
     need("ALL PASS" in text, "test_plugin_guard 没打印 ALL PASS：%s" % text.strip()[-400:])
 
 
+@check("脚本面板宿主不禁用（1.1.10）：tests/test_plugin_guard_keep.py 全过")
+def _():
+    # 第 36 项。来历：用户 2026-11-17 真机结论 —— 插件恢复后 FX Console 这类脚本面板
+    # 不会自动重载，要重启 AE 才回来；更好的做法是一开始就不禁用面板宿主。
+    # 这条测试盯三件事：面板宿主保持不变、.jsx/.jsxbin 永不改名、旧版遗留的 .off 自愈。
+    p = os.path.join(ROOT, "tests", "test_plugin_guard_keep.py")
+    need(os.path.isfile(p), "找不到 tests\\test_plugin_guard_keep.py")
+    out = subprocess.run([sys.executable, p], capture_output=True, cwd=ROOT, timeout=120)
+    text = _decode(out.stdout) + _decode(out.stderr)
+    need(out.returncode == 0, "test_plugin_guard_keep 退出码 %s：%s" % (out.returncode, text.strip()[-600:]))
+    need("ALL PASS" in text, "test_plugin_guard_keep 没打印 ALL PASS：%s" % text.strip()[-400:])
+
+
+@check("批量任务列表窗（1.1.11）：tests/test_batch_ui.py 全过")
+def _():
+    # 第 37 项。来历：用户 2026-11-18 要「一个看得见的批量队列」——1.1.7 的批量是隐式接力
+    # （多选后自动一个个跑，界面只有一个「3/5」提示），看不见队、也改不了顺序。
+    # 这条测试盯五件事：队列去重/排序、状态文案、CLI 行解析、持久化往返、建窗零写盘。
+    p = os.path.join(ROOT, "tests", "test_batch_ui.py")
+    need(os.path.isfile(p), "找不到 tests/test_batch_ui.py")
+    out = subprocess.run([sys.executable, p], capture_output=True, cwd=ROOT, timeout=180)
+    text = _decode(out.stdout) + _decode(out.stderr)
+    need(out.returncode == 0, "test_batch_ui 退出码 %s：%s" % (out.returncode, text.strip()[-600:]))
+    need("ALL PASS" in text, "test_batch_ui 没打印 ALL PASS：%s" % text.strip()[-400:])
+
+
 @check("工程插件解析（1.1.9）：tests/test_project_plugins.py 全过")
 def _():
     p = os.path.join(ROOT, "tests", "test_project_plugins.py")

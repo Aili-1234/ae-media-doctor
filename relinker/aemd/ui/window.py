@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """aemd.ui.window —— 主窗口（单屏密度，六块）。
 
 布局（§5：900×820 不出横向滚动）：
@@ -563,6 +563,13 @@ class MainWindow(object):
         self.btn_manual = W.flat_button(head, "手动模式…", self.start_manual)
         self.btn_manual.pack(side="right", padx=(0, 8))
         W.Tip(self.btn_manual, "只生成脚本、不启动 AE。适合在 AE 里手动跑一次（Run Script File）。")
+        # 1.1.11（第二档 ⑦ 方案 A）：批量任务列表窗 —— 一个看得见的队列，
+        # 每项一行状态，点「开始全部」按顺序跑。和 1.1.7 的"多选后自动接力"互补：
+        # 那个是隐式队列（只有一个 3/5 的提示），这个是显式列表（能看、能改顺序、能重跑）。
+        self.btn_batch = W.flat_button(head, "批量…", self.open_batch)
+        self.btn_batch.pack(side="right", padx=(0, 8))
+        W.Tip(self.btn_batch, "一次修很多工程：列个队，一行一个，按顺序跑。\n"
+                              "每一项都是独立的拾链进程，互不影响；队列会记住，下次打开还在。")
 
     # ① 工程文件 + AE 版本
     def _build_block_project(self):
@@ -1436,6 +1443,18 @@ class MainWindow(object):
 
     def start_manual(self):
         self.start(manual=True)
+
+    def open_batch(self):
+        """打开批量任务列表窗（1.1.11 ⑦）。已经开着就把它提到前面，不再开第二个。"""
+        win = getattr(self, "_batch_win", None)
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            win.focus_force()
+            return win
+        from .batch import BatchWindow
+        self._batch_win = BatchWindow(self)
+        return self._batch_win
 
     def export_diag(self):
         self.set_result("正在收集诊断信息…", None)
