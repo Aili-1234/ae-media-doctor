@@ -780,6 +780,12 @@ class MainWindow(object):
         self.btn_miss = W.flat_button(head, "缺失清单", self.show_missing)
         self.btn_miss.configure(state="disabled")
         self.btn_miss.pack(side="right", padx=(0, T.PAD))
+        # 1.1.6：只重试缺件（跑完且真缺件时才可点）
+        self.btn_only = W.flat_button(head, "只重试缺件", self.retry_missing)
+        self.btn_only.configure(state="disabled")
+        self.btn_only.pack(side="right", padx=(0, T.PAD))
+        W.Tip(self.btn_only, "只按上一次的缺件清单重跑那几条，不重扫全盘。\n"
+                             "补齐素材、或指定过替身之后点它，几秒就能看到结果。")
         self.btn_report = W.flat_button(head, "工程文件夹", self.open_report_dir)
         self.btn_report.pack(side="right", padx=(0, T.PAD))
 
@@ -977,7 +983,7 @@ class MainWindow(object):
             self.set_result("新增 %d 个目录" % added, "ok")
         return dirs
 
-    def _opts(self):
+    def _opts(self, only_missing=False):
         from .. import cfg as _cfg
         mode = _cfg.consolidate_mode_value(
             self.var_consmode.get(), self._cons_on())
@@ -989,12 +995,13 @@ class MainWindow(object):
             cons_mode=("move" if mode == "move" else "copy"),
             copy_project=bool(self.var_copy.get()),
             close_own_ae=bool(self.auto_close.get()),
+            only_missing=bool(only_missing),
         )
 
     def _ae_exe(self):
         return self.ae_map.get(self.var_ae.get(), "")
 
-    def start(self, manual=False):
+    def start(self, manual=False, only_missing=False):
         if self.running:
             return
         proj = self.var_proj.get().strip()
@@ -1006,7 +1013,7 @@ class MainWindow(object):
             return
         self._persist()
         self._clear_log()
-        run = runner.Run(proj, self._roots(), self._opts(),
+        run = runner.Run(proj, self._roots(), self._opts(only_missing),
                          log=lambda m, tag=None: self.inbox.push(("log", m, tag)),
                          ae_exe=self._ae_exe())
         if manual:
@@ -1018,6 +1025,7 @@ class MainWindow(object):
         self.btn_run.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.btn_miss.configure(state="disabled")
+        self.btn_only.configure(state="disabled")
         self.set_result("准备中…", None)
         self.set_status("准备中…")
         if not self.prog.winfo_ismapped():
@@ -1148,6 +1156,8 @@ class MainWindow(object):
                 self.log("NOTE      工程目录里还有老版本留下的文件：%s（没有自动删）" % f, "dim")
         mp = self.run_obj.missing_path() if self.run_obj is not None else ""
         self.btn_miss.configure(state="normal" if mp else "disabled")
+        # 1.1.6：有缺件清单才让「只重试缺件」可点（没缺件时它没有意义）
+        self.btn_only.configure(state="normal" if mp else "disabled")
         self.btn_report.configure(state="normal")
 
     def _probe_ae(self):
@@ -1217,6 +1227,18 @@ class MainWindow(object):
             os.startfile(p)
         except Exception as e:
             self.set_result("打不开缺件清单（%s）" % e, "bad")
+
+    def retry_missing(self):
+        """只重试上一次没接上的那几条（用工程 .ae_doctor 里的缺件清单）。
+
+        为什么值得单独一个按钮：大工程重跑一轮要重扫全盘、重开工程、重新逐条比对；
+        而"我已经把缺的那 11 个素材拷进目录了"这种情况，只想再试这 11 条。
+        """
+        p = self.run_obj.missing_path() if self.run_obj is not None else ""
+        if not p or not os.path.isfile(p):
+            self.set_result("没有上一次的缺件清单，先完整跑一次", "warn")
+            return
+        self.start(only_missing=True)
 
     def start_manual(self):
         self.start(manual=True)

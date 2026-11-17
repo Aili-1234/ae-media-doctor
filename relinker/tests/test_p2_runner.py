@@ -501,6 +501,30 @@ def _():
         need("卡死" in (p2.message or ""), "失败原因要写明更像卡死：%r" % (p2.message,))
 
 
+@case("K. 进度 X/N：从日志行数出「已处理 / 总数」（大工程不再只有一个转圈）")
+def _():
+    """用户 2026-11-17 提的：大工程没有进度，只有日志滚动。
+
+    JSX 本来就一行一素材地写日志，所以不必改脚本接口 —— 只要在 runner 侧数出来。
+    这条测的是纯函数，不碰 AE、不碰文件。
+    """
+    lines = [
+        "OPEN      D:////ae////again.aep",
+        "ITEMS     32",
+        "OK        a.mp4  |  D:/ae/a.mp4",
+        "RELINKED  b.mp4  |  D:/missing/b.mp4  =>  D:/ae/b.mp4",
+        "MISSING   c.mp4  |  E:/x/c.mp4  |  本地无同名文件",
+        "TIME      逐条重连  +12.3s",
+    ]
+    done, total = runner.Run._scan_progress(lines)
+    need((done, total) == (3, 32), "应当数出 3/32，实得 %r" % ((done, total),))
+    need(runner.Run._scan_progress([]) == (0, 0), "空日志应当是 0/0")
+    need(runner.Run._scan_progress(["ITEMS     0"]) == (0, 0), "空工程不该崩")
+    # 边界：ITEMS 后面不是数字（脚本被改坏）时不能抛
+    done2, total2 = runner.Run._scan_progress(["ITEMS     abc", "OK  x"])
+    need((done2, total2) == (1, 0), "坏 ITEMS 行应当忽略，实得 %r" % ((done2, total2),))
+
+
 def main():
     total = len(PASS) + len(FAIL)
     print("")

@@ -229,6 +229,44 @@ function pickSameParent(list, want){
             L("LAYER-WARN " + item.name + "  |  " + target + "  |  分层素材（." + lext + "）已重连，请核对图层结构是否完整");
         }
 """, ""),
+    # 1.1.6：只重试缺件的名单（渲染后是空数组，对拍要把这整块删掉）
+    (r"""/* 1.1.6 只重试缺件：非空时只处理名单里的素材（名字来自 _relink_missing.txt 第一列） */
+var ONLY = [];
+
+""", ""),
+    # 1.1.6：名单匹配用的两个小工具（纯新增；尾部空行留给模板原有的分隔）
+    (r"""
+/* 1.1.6：只重试缺件时判断「这条要不要处理」。
+   名单来自上一次的缺件清单（第一列），所以三个名字都认：当前文件名、缺件原路径的
+   文件名、素材项名 —— 任意一种对上就处理，避免因为改名而漏掉。 */
+function baseNameOf(p){
+    var s2 = String(p || "").replace(/\\/g, "/");
+    return s2.substring(s2.lastIndexOf("/") + 1).toLowerCase();
+}
+function wantedByOnly(it){
+    if (!ONLY || !ONLY.length) return true;
+    var s2 = it.mainSource;
+    var n1 = "", n2 = "";
+    try { if (s2 && s2.file) n1 = String(s2.file.name).toLowerCase(); } catch(e){}
+    try { if (s2 && s2.missingFootagePath) n2 = baseNameOf(s2.missingFootagePath); } catch(e){}
+    var nm = String(it.name || "").toLowerCase();
+    for (var i2 = 0; i2 < ONLY.length; i2++){
+        if (ONLY[i2] === n1 || ONLY[i2] === n2 || ONLY[i2] === nm) return true;
+    }
+    return false;
+}
+""", ""),
+    # 1.1.6：主循环按名单过滤
+    (r"""    for (var i=1;i<=proj.numItems;i++){
+        var ci = proj.item(i);
+        if (!(ci instanceof FootageItem)) continue;
+        /* 1.1.6：只重试缺件时跳过不在名单里的（日志留一行，便于事后核对跳过了什么） */
+        if (!wantedByOnly(ci)) { L("SKIP-ONLY " + ci.name); continue; }
+        relink(ci);
+    }""",
+     r"""    for (var i=1;i<=proj.numItems;i++){
+        if (proj.item(i) instanceof FootageItem) relink(proj.item(i));
+    }"""),
 ]
 
 
@@ -281,7 +319,8 @@ def js_list(items):
 
 def render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
            cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
-           report_dir=None, state_dir=None, app_ver=None, mapping=None):
+           report_dir=None, state_dir=None, app_ver=None, mapping=None,
+           only_missing=None):
     """把模板填成 JSX 文本（不落盘）。**与 v1.9.8 build_jsx() 逐字节一致**。
 
     `report_dir` / `state_dir` / `app_ver` 是 v2 的新入口（一代直接读模块常量），
@@ -309,6 +348,8 @@ def render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
         # 1.1.0：手工映射表整个塞进 JSX（键已规范化：小写、正斜杠）。空表 → `{}`，
         # 于是「没配映射」与 v1.9.8 行为完全相同（对拍靠 KNOWN_DIFFS 把这一行删掉）。
         ("__MAPPING__", _js_object(mapping or {})),
+        # 1.1.6：只重试缺件 -> 名单（小写）。空列表 = 全量跑，与旧行为完全一致。
+        ("__ONLY_MISSING__", js_list([str(x).lower() for x in (only_missing or []) if x])),
     ]
     jsx = JSX_TEMPLATE
     for k, v in repl:
@@ -367,12 +408,12 @@ def _node_check(text):
 
 def build(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
           cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
-          report_dir=None, state_dir=None, path=None, mapping=None):
+          report_dir=None, state_dir=None, path=None, mapping=None, only_missing=None):
     """render → validate → 落盘到 target_path() → 返回落盘路径。"""
     text = render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=depth,
                   cons_mode=cons_mode, launch_ms=launch_ms, work_dir=work_dir,
                   log_path=log_path, report_dir=report_dir, state_dir=state_dir,
-                  mapping=mapping)
+                  mapping=mapping, only_missing=only_missing)
     problems = validate(text)
     if problems:
         raise RuntimeError("生成的 JSX 没通过自检：" + "；".join(problems))
@@ -409,6 +450,9 @@ var CFG = {
 
 /* 1.1.0 手工映射表：键是小写原文件名或原完整路径，值是目标文件的绝对路径 */
 var MAPPING = __MAPPING__;
+
+/* 1.1.6 只重试缺件：非空时只处理名单里的素材（名字来自 _relink_missing.txt 第一列） */
+var ONLY = __ONLY_MISSING__;
 
 var OUT = CFG.reportDir || (CFG.project.substring(0, CFG.project.lastIndexOf("/")));
 var WORK = CFG.workDir || OUT;
@@ -520,6 +564,26 @@ function pickSameParent(list, want){
         if (parentNameOf(list[i]) === want) return list[i];
     }
     return null;
+}
+
+/* 1.1.6：只重试缺件时判断「这条要不要处理」。
+   名单来自上一次的缺件清单（第一列），所以三个名字都认：当前文件名、缺件原路径的
+   文件名、素材项名 —— 任意一种对上就处理，避免因为改名而漏掉。 */
+function baseNameOf(p){
+    var s2 = String(p || "").replace(/\\/g, "/");
+    return s2.substring(s2.lastIndexOf("/") + 1).toLowerCase();
+}
+function wantedByOnly(it){
+    if (!ONLY || !ONLY.length) return true;
+    var s2 = it.mainSource;
+    var n1 = "", n2 = "";
+    try { if (s2 && s2.file) n1 = String(s2.file.name).toLowerCase(); } catch(e){}
+    try { if (s2 && s2.missingFootagePath) n2 = baseNameOf(s2.missingFootagePath); } catch(e){}
+    var nm = String(it.name || "").toLowerCase();
+    for (var i2 = 0; i2 < ONLY.length; i2++){
+        if (ONLY[i2] === n1 || ONLY[i2] === n2 || ONLY[i2] === nm) return true;
+    }
+    return false;
 }
 
 function relink(item){
@@ -731,7 +795,11 @@ try {
     T("准备（载入索引）");
 
     for (var i=1;i<=proj.numItems;i++){
-        if (proj.item(i) instanceof FootageItem) relink(proj.item(i));
+        var ci = proj.item(i);
+        if (!(ci instanceof FootageItem)) continue;
+        /* 1.1.6：只重试缺件时跳过不在名单里的（日志留一行，便于事后核对跳过了什么） */
+        if (!wantedByOnly(ci)) { L("SKIP-ONLY " + ci.name); continue; }
+        relink(ci);
     }
     T("逐条重连");
 

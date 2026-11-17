@@ -54,7 +54,7 @@ class Options:
 
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
-                 mapping_path=""):
+                 mapping_path="", only_missing=False):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -66,6 +66,8 @@ class Options:
         self.close_own_ae = bool(close_own_ae)
         # 1.1.0 手工映射表：空 = 用 %APPDATA%\AE素材医生\mapping.json（界面/默认都走这里）
         self.mapping_path = mapping_path or ""
+        # 1.1.6 只重试缺件：只用上一次的 _relink_missing.txt，不重扫全盘
+        self.only_missing = bool(only_missing)
 
 
 class CopyProjectError(RuntimeError):
@@ -146,6 +148,8 @@ class Run(object):
         self.started_at = 0.0
         self.elapsed = 0.0
         self._seen_log = 0         # 已经发出去的日志行数
+        self.done_items = 0        # 已处理素材条数（进度用）
+        self.total_items = 0       # 工程里素材总条数（ITEMS 行给出的）
         self._diag_done = False
         self._hung_logged = False
         self._diag = {}
@@ -193,6 +197,13 @@ class Run(object):
         # ② 路径三件套：工程旁的结果目录、软件自己的日志与临时目录
         out_dir = os.path.dirname(os.path.abspath(self.work))
         self.state_dir = paths.state_dir_of(out_dir)
+        only = []
+        if self.opt.only_missing:
+            mp = os.path.join(self.state_dir, const.MISSING_TXT)
+            only = [x.get("name") for x in reports.parse_missing(mp) if x.get("name")]
+            if not only:
+                raise ValueError("没有上一次的缺件清单（%s）—— 先完整跑一次，再用「只重试缺件」" % mp)
+            self.log("ONLY    只重试上一次没接上的 %d 条（不重扫全盘）" % len(only), "dim")
         paths.clear_state(self.state_dir)
         stems = os.path.splitext(os.path.basename(self.project))[0]
         self.log_path = paths.log_path_for(out_dir, stems)
@@ -221,7 +232,7 @@ class Run(object):
                 self.opt.cons_dir, self.opt.save, self.state_dir,
                 depth=self.opt.depth, cons_mode=self.opt.cons_mode,
                 work_dir=const.WORK_DIR, log_path=self.log_path,
-                state_dir=self.state_dir, launch_ms=0, mapping=table)
+                state_dir=self.state_dir, launch_ms=0, mapping=table, only_missing=only)
         except (OSError, RuntimeError) as e:
             raise ScriptGenError("生成脚本失败：%s" % e)
         self.log("SCRIPT 脚本已生成 %s" % self.jsx_path, "dim")
@@ -265,6 +276,10 @@ class Run(object):
 
         self.elapsed = _now() - self.started_at
         lines = self._drain_log()
+        d_, t_ = self._scan_progress(lines)
+        self.done_items += d_
+        if t_:
+            self.total_items = t_
 
         # ① 报告出现 = 脚本干完了（不管 AE 还开不开着）
         rep = self._read_report()
@@ -366,8 +381,11 @@ class Run(object):
         el = self.elapsed
         if el > const.SCRIPT_WAIT_S:
             return self._fail("脚本跑了 %d 分钟还没结束" % int(el // 60), lines, partial=True)
-        return Poll(State.RUNNING, el, lines, limit_s=const.SCRIPT_WAIT_S,
-                    status_text="正在重连… %ds" % int(el))
+        if self.total_items:
+            txt = "正在重连… %d/%d  %ds" % (self.done_items, self.total_items, int(el))
+        else:
+            txt = "正在重连… 已处理 %d 条  %ds" % (self.done_items, int(el))
+        return Poll(State.RUNNING, el, lines, limit_s=const.SCRIPT_WAIT_S, status_text=txt)
 
     # ------------------------------------------------------------ 结算
 
@@ -455,6 +473,25 @@ class Run(object):
         return " ".join(parts)
 
     # ------------------------------------------------------------ 内部
+
+    @staticmethod
+    def _scan_progress(lines):
+        """从 JSX 日志行里数出 (已处理, 总数)；数不出来返回 (0, 0)。
+
+        一行一素材：`OK / ZERO / RELINKED / MISSING / FAILED / WOULD-FIX` 各算处理过一条；
+        `ITEMS   N` 由脚本开头写出，就是总数。界面拿它显示「17/32」，
+        比干等一个转圈有用得多（2026-11-17 用户提的：大工程没进度）。
+        """
+        done = 0
+        total = 0
+        for ln in lines or []:
+            if ln.startswith("ITEMS"):
+                parts = ln.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    total = int(parts[1])
+            elif ln.startswith(("OK ", "ZERO ", "RELINKED ", "MISSING ", "FAILED ", "WOULD-FIX ")):
+                done += 1
+        return done, total
 
     def _drain_log(self):
         """读日志文件的新增部分（只发新行，不重复、不整文件重读）。"""
@@ -593,6 +630,7 @@ USAGE = """用法：
   --yes      检测到自己开着的 AE 时，允许关掉它再跑（默认拒绝）
   --close-ae 跑完把**本次拉起的那个** AE 关掉（默认不关；旧 --yes 的「跑完关」语义搬到这里）
   --manual   只生成脚本，不启动 AE
+  --only-missing  只重试上一次没接上的那几条（用工程 .ae_doctor 里的缺件清单）
   --mapping  手工映射表（默认 %APPDATA%\\AE素材医生\\mapping.json）
 
 退出码：0 成功 / 1 超时 / 2 参数或 AE 问题 / 3 AE 占用且关不掉 / 4 复制工程失败 / 5 生成脚本失败
@@ -602,7 +640,8 @@ USAGE = """用法：
 def parse_cli(argv):
     """解析 CLI 参数 → dict。不认识的参数抛 ValueError（退出码 2 的来源）。"""
     out = {"project": "", "dry": False, "save": True, "roots": [], "ae": "",
-           "yes": False, "close_ae": False, "manual": False, "mapping": ""}
+           "yes": False, "close_ae": False, "manual": False, "mapping": "",
+           "only_missing": False}
     args = list(argv)
     if not args:
         raise ValueError("缺少工程路径")
@@ -619,6 +658,8 @@ def parse_cli(argv):
             out["close_ae"] = True
         elif a == "--manual":
             out["manual"] = True
+        elif a == "--only-missing":
+            out["only_missing"] = True
         elif a == "--roots":
             i += 1
             if i >= len(args):
@@ -671,7 +712,8 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
     # D3：默认**不关**本次 AE。--close-ae 才关（旧 --yes 的「跑完关」并到这里），
     # 关的仍然只可能是我们自己拉起的那只（aehost.close_own_ae 的白名单）。
     options = Options(dry=opt["dry"], save=opt["save"], copy_project=not opt["dry"],
-                      close_own_ae=opt["close_ae"], mapping_path=opt["mapping"])
+                      close_own_ae=opt["close_ae"], mapping_path=opt["mapping"],
+                      only_missing=opt["only_missing"])
     # t-21：控制台两路输出对齐。控制台其实是两路交织 ——
     #   ①JSX 日志逐行回显（SUMMARY / SAVED / DONE-OK…）
     #   ②Run 自己打的 DONE / NOTE / WARN

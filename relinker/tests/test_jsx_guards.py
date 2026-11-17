@@ -74,6 +74,21 @@ def _():
     need("LAYER-WARN" not in t, "删完还剩 LAYER-WARN：说明没登记进 KNOWN_DIFFS")
 
 
+@check("D 只重试缺件：名单进 JSX（小写），做的是过滤而不是改匹配规则")
+def _():
+    t = jsx.render(r"D://ae//again.aep", [r"D://ae"], False, False, "", True,
+                   r"D://ae//.ae_doctor", app_ver="1.1.6",
+                   only_missing=["A.MP4", "b.png"])
+    need('var ONLY = ["a.mp4", "b.png"];' in t, "名单没进 JSX 或没转小写")
+    need("function wantedByOnly" in t, "缺判据函数")
+    need("if (!wantedByOnly(ci))" in t, "主循环没有按名单过滤")
+    need('L("SKIP-ONLY "' in t, "跳过时没留痕（事后没法核对跳过了什么）")
+    # 不能顺手改匹配：四层还在、mapping 还在
+    for must in ("全名匹配", "基名匹配", "映射表", "stats.mapped++"):
+        need(must in t, "原有匹配/映射被改坏了：%s" % must)
+    need(not jsx.validate(t), "自检没过：%r" % (jsx.validate(t),))
+
+
 def main():
     print("拾链 —— JSX 护栏回归（tests/test_jsx_guards.py）")
     print("-" * 66)
