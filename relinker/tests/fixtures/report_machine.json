@@ -1,0 +1,26 @@
+{
+  "_fixture_note": "真机报告夹具。原文出自 2026-11-15 14:42 那次回归（工程 again.aep，32 条素材引用）。stats 与 missing 为全量原文；relinked 只留 3 条样例（全名 / 基名多候选 / 图片各一），因为 parse_report 不读明细，留全量只会让夹具变重。原路径里的 C:\\Users\\Administrator 已替换成 <user>。",
+  "script": "AE Media Doctor v1.9.7",
+  "project": "D:\\ae\\别人工程\\again (1)\\again\\again_fixed.aep",
+  "logWritable": true,
+  "dryRun": false,
+  "stats": { "total": 32, "ok": 0, "fixed": 21, "missing": 11, "ambiguous": 1, "zeroByte": 0 },
+  "relinked": [
+    { "item": "1 (6).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_aae2df.mp4", "to": "D:/ae/别人工程/again (1)/again/Footages/1 (6).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_aae2df.mp4", "how": "全名匹配" },
+    { "item": "1 (6).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_aae2df.mp4", "to": "D:/ae/别人工程/again (1)/again/Footages/1 (6).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_aae2df.mp4", "how": "基名匹配(6 个候选)" },
+    { "item": "0501056b-7d0c-4116-a506-f0f9d89d2888.jpg", "to": "D:/ae/别人工程/again (1)/again/Footages/0501056b-7d0c-4116-a506-f0f9d89d2888.jpg", "how": "全名匹配" }
+  ],
+  "missing": [
+    { "name": "1 (1).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_6fac5f.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\7\\1 (1).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_6fac5f.mp4", "reason": "本地无同名文件" },
+    { "name": "1 (55).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_827d60.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\16\\1 (55).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_827d60.mp4", "reason": "本地无同名文件" },
+    { "name": "1 (56).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_d4d721.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\16\\1 (56).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_d4d721.mp4", "reason": "本地无同名文件" },
+    { "name": "1 (57).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_77f8aa.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\16\\1 (57).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_77f8aa.mp4", "reason": "本地无同名文件" },
+    { "name": "1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\16\\1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4", "reason": "本地无同名文件" },
+    { "name": "1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4", "original": "E:\\素材\\02\\G-Xi 02补帧镜头包\\16\\1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4", "reason": "本地无同名文件" },
+    { "name": "Again & Again.mp3", "original": "E:\\ae\\Again & Again.mp3", "reason": "本地无同名文件" },
+    { "name": "FILMBURN_SOFT_002(1).mp4", "original": "E:\\素材\\FILMBURN_SOFT_002(1).mp4", "reason": "本地无同名文件" },
+    { "name": "hanabi_logo.mp4", "original": "C:\\Users\\<user>\\Downloads\\hanabi_logo.mp4", "reason": "本地无同名文件" },
+    { "name": "SnapInsta.to_AQPY05r3SvcTpgP948a531CjtTQUtVIVZnTR5Tllwoo3EtM5lQrewdC5Y38asaSZbsF670hd6AA8zPKTDRVrD9y9.mp4", "original": "E:\\ae\\SnapInsta.to_AQPY05r3SvcTpgP948a531CjtTQUtVIVZnTR5Tllwoo3EtM5lQrewdC5Y38asaSZbsF670hd6AA8zPKTDRVrD9y9.mp4", "reason": "本地无同名文件" },
+    { "name": "y2mate.com - White Light Leaks for Transitions an.MP4", "original": "E:\\ae\\2025.1.15.cw kano\\Footage\\Overlays\\y2mate.com - White Light Leaks for Transitions an.MP4", "reason": "本地无同名文件" }
+  ]
+}

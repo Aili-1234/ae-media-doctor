@@ -14,7 +14,9 @@
 不写真 `%APPDATA%`（`const.APP_HOME/LOG_DIR/WORK_DIR` 指向临时目录）。
 """
 
+import io
 import os
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -73,6 +75,11 @@ class Sandbox(object):
         self.logs = os.path.join(self.app_home, "logs")
         self.work = os.path.join(self.app_home, "work")
         const.APP_HOME, const.LOG_DIR, const.WORK_DIR = self.app_home, self.logs, self.work
+        # cfg.cfg_dir() 只看 %APPDATA%，**不认 const.APP_HOME** —— 只挪常量的话，
+        # 界面用例里任何一次 _persist() 都会写进真实配置（2026-11-17 就这么把用户的
+        # settings.json 写成了临时目录里的「甲.aep」）。这里连环境变量一起沙箱。
+        self.saved_appdata = os.environ.get("APPDATA")
+        os.environ["APPDATA"] = self.tmp
         os.makedirs(self.logs, exist_ok=True)
         os.makedirs(self.work, exist_ok=True)
         from aemd import cfg as v2cfg
@@ -82,6 +89,10 @@ class Sandbox(object):
 
     def __exit__(self, *a):
         const.APP_HOME, const.LOG_DIR, const.WORK_DIR = self.saved
+        if getattr(self, "saved_appdata", None) is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = self.saved_appdata
         from aemd import cfg as v2cfg
         v2cfg.merge_cfg = self.real_merge
         return False
@@ -91,6 +102,11 @@ class Win(object):
     """建一个真窗口，退出时销毁（每个用例一个，互不干扰）。"""
 
     def __enter__(self):
+        # 每个窗口都进沙箱。以前 Sandbox 只在「诊断包」那一个用例里手动开过，其余用例
+        # 全靠"没人写盘"侥幸安全 —— 2026-11-17 加了批量用例（会调 set_project → _persist），
+        # 当场把用户真实的 settings.json 写成了临时目录里的「甲.aep」。
+        self.sb = Sandbox()
+        self.sb.__enter__()
         self.root = tk.Tk()
         self.root.withdraw()          # 用例期间不弹到用户脸上
         self.w = U.MainWindow(root=self.root, cfg_data={}, installs=[])
@@ -102,6 +118,8 @@ class Win(object):
             self.root.destroy()
         except tk.TclError:
             pass
+        finally:
+            self.sb.__exit__(*a)
         return False
 
 
@@ -542,6 +560,38 @@ def _():
             need(d <= 1, "第 %d 与第 %d 行的行间距两侧差 %d px（应 <= 1）：左 %r 右 %r"
                  % (i + 1, i + 2, d, pl, pr))
         w.root.withdraw()
+
+
+@case("P. 批量：多选排进队列、提示「批量 1/N」、点停止整批清空")
+def _():
+    d = tempfile.mkdtemp(prefix="aemd_ui_batch_")
+    try:
+        ps = []
+        for n in ("甲", "乙", "丙"):
+            p = os.path.join(d, n + ".aep")
+            io.open(p, "wb").write(b"x")
+            ps.append(p)
+        with Win() as w:
+            w.adopt_projects(ps)
+            need(w.batch_total == 3, "batch_total 应为 3，实得 %r" % (w.batch_total,))
+            need(w.queue == ps[1:], "队列应当剩两个：%r" % (w.queue,))
+            need(w.var_proj.get() == ps[0], "第一个应当成为当前工程：%r" % (w.var_proj.get(),))
+            need(w.lb_batch.cget("text") == "批量 1/3",
+                 "提示不对：%r" % (w.lb_batch.cget("text"),))
+
+            # 再单选一个：批量的残留必须清掉（否则跑完会自己接着跑上次那批）
+            w.adopt_projects([ps[2]])
+            need(w.batch_total == 1 and w.queue == [], "单选应当清掉批量残留")
+            need(w.lb_batch.cget("text") == "", "单选时不该显示批量提示")
+
+            # 停止 = 整批停
+            w.adopt_projects(ps)
+            w.stop()
+            need(w.queue == [] and w.batch_total == 0,
+                 "点停止必须清空队列（不然跑完又自己起下一个）")
+            need(w.lb_batch.cget("text") == "", "停止后批量提示应清掉")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def main():

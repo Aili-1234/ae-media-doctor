@@ -105,6 +105,9 @@ class MappingDialog(object):
     def __init__(self, parent, table=None, missing=None, on_saved=None, log=None):
         self.parent = parent
         self.table = dict(table or {})
+        # 1.1.7：打开时的快照。存盘走三方合并（base/mine/disk），
+        # 否则界面开着一天、中间命令行跑过一轮，后存的会把对方的整表吃掉。
+        self._base = dict(self.table)
         self.missing = list(missing or [])
         self.on_saved = on_saved
         self.log = log or (lambda msg, tag=None: None)
@@ -389,14 +392,20 @@ class MappingDialog(object):
 
     def save_all(self):
         try:
-            p = mapping.save(self.table)
+            merged, st = mapping.save_merged(self.table, self._base)
         except OSError as e:
             self._say("没存上：%s" % e, "bad")
             return
+        self.table = merged
+        self._base = dict(merged)
         self._set_dirty(False)
+        self._render()
         n = len(self.table)
-        self.log("MAP     替身表已保存 %d 条：%s" % (n, p), "dim")
-        self._say("已保存 %d 条替身 —— 下次跑就按它接" % n, "ok")
+        extra = ""
+        if st.get("kept"):
+            extra = "，其中 %d 条是别处新增的（已一并保留）" % st["kept"]
+        self.log("MAP     替身表已保存 %d 条：%s%s" % (n, mapping.default_path(), extra), "dim")
+        self._say("已保存 %d 条替身%s —— 下次跑就按它接" % (n, extra), "ok")
         if self.on_saved is not None:
             self.on_saved(n)
 
@@ -421,13 +430,17 @@ class MappingDialog(object):
             return
         self.table = mapping.add(self.table, key, f)
         try:
-            mapping.save(self.table)
+            merged, st = mapping.save_merged(self.table, self._base)
         except OSError as e:
             self._set_dirty(True)
             self._render()
             self._say("没存上：%s" % e, "bad")
             return
+        self.table = merged
+        self._base = dict(merged)
         self._render()
+        if st.get("kept"):
+            self.log("MAP     另有 %d 条是别处新增的，已保留" % st["kept"], "dim")
         self.log("MAP     %s -> %s" % (key, f), "dim")
         self._say("已记下：%s —— 下次跑就按它接" % key, "ok")
         if self.on_saved is not None:
@@ -453,6 +466,11 @@ class MainWindow(object):
 
         self.run_obj = None
         self.running = False
+        # 1.1.7 批量：queue = 还没跑的工程；batch_total/done 用来显示「第几个/共几个」
+        self.queue = []
+        self.batch_total = 0
+        self.batch_done = 0
+        self.batch_rows = []
         self.inbox = worker.Inbox()          # 后台线程 → 主线程的日志/事件通道
         self.upd_bar = None
         self.upd_seen = None
@@ -597,6 +615,8 @@ class MainWindow(object):
         self.btn_map.pack(side="left")
         self.lb_map = tk.Label(mrow, text="", bg=T.CARD, fg="#5d6472", font=T.FONT_SMALL)
         self.lb_map.pack(side="left", padx=(T.PAD_S, 0))
+        self.lb_batch = tk.Label(mrow, text="", bg=T.CARD, fg=T.ACCENT, font=T.FONT_SMALL)
+        self.lb_batch.pack(side="right")
         self._refresh_map_hint()
 
     # ② 素材搜索目录
@@ -934,11 +954,41 @@ class MainWindow(object):
     # ------------------------------------------------------------ 用户动作
 
     def pick_project(self):
-        p = filedialog.askopenfilename(title="选一个 AE 工程",
-                                       filetypes=[("After Effects 工程", "*.aep"),
-                                                  ("所有文件", "*.*")])
-        if p:
-            self.set_project(p)
+        """选工程 —— 支持多选（接一整季/多集时不用一个个跑）。"""
+        try:
+            ps = filedialog.askopenfilenames(title="选 AE 工程（可按住 Ctrl 多选）",
+                                             filetypes=[("After Effects 工程", "*.aep"),
+                                                        ("所有文件", "*.*")])
+        except Exception:
+            ps = ()
+        if not ps:
+            return
+        if isinstance(ps, str):          # 个别 Tk 版本返回 "a b" 这种串
+            ps = ps.split()
+        self.adopt_projects(list(ps))
+
+    def adopt_projects(self, ps):
+        """接住一批工程：第一个当当前工程，其余排队，跑完自动接下一个。"""
+        ps = [x for x in (ps or []) if x]
+        if not ps:
+            return
+        self.queue = list(ps[1:])
+        self.batch_total = len(ps)
+        self.batch_done = 0
+        self.batch_rows = []
+        self.set_project(ps[0])
+        self._refresh_batch_hint()
+        if len(ps) > 1:
+            self.log("BATCH    已排 %d 个工程，跑完一个自动接下一个" % len(ps), "dim")
+
+    def _refresh_batch_hint(self):
+        if not hasattr(self, "lb_batch"):
+            return
+        if self.batch_total > 1:
+            cur = min(self.batch_done + 1, self.batch_total)
+            self.lb_batch.configure(text="批量 %d/%d" % (cur, self.batch_total))
+        else:
+            self.lb_batch.configure(text="")
 
     def set_project(self, p):
         """用户真实编辑（「选工程…」对话框确认 / 拖进来的文件）：必须落盘，且**只落一次**。
@@ -1045,6 +1095,11 @@ class MainWindow(object):
             self.inbox.push(("start_failed", type(e).__name__, str(e)))
 
     def stop(self):
+        # 1.1.7：点停止就**整批**停（清空队列），否则跑完这一个又会自己起下一个
+        self.queue = []
+        self.batch_total = 0
+        self.batch_done = 0
+        self._refresh_batch_hint()
         if self.run_obj is not None:
             self.run_obj.cancel()
         self.btn_stop.configure(state="disabled")
@@ -1159,6 +1214,59 @@ class MainWindow(object):
         # 1.1.6：有缺件清单才让「只重试缺件」可点（没缺件时它没有意义）
         self.btn_only.configure(state="normal" if mp else "disabled")
         self.btn_report.configure(state="normal")
+        self._advance_batch(p)
+
+    def _advance_batch(self, p):
+        """一批工程的推进：记一行结果 → 有下一个就自动起 → 全跑完给汇总。
+
+        为什么自动起而不是等用户点：批量点的就是"我一次挑了 8 集，你去跑"；
+        每集都要回来点一下，那多选就没意义了。
+        """
+        if not self.batch_total:
+            return
+        self.batch_done += 1
+        res = getattr(self.run_obj, "result", None)
+        st = (res.stats if res is not None else (p.report or {}).get("stats") or {})
+        proj = getattr(self.run_obj, "project", "") or self.var_proj.get()
+        good = p.state is runner.State.DONE
+        self.batch_rows.append({
+            "project": proj, "ok": good,
+            "fixed": int(st.get("fixed") or 0),
+            "missing": int(st.get("missing") or 0),
+            "msg": p.message or "",
+        })
+        if self.queue:
+            nxt = self.queue.pop(0)
+            self.log("")
+            self.log("==== 下一个 [%d/%d]：%s"
+                     % (self.batch_done + 1, self.batch_total, nxt), "dim")
+            self._set_project_quiet(nxt)
+            self.var_proj.set(nxt)
+            self._refresh_batch_hint()
+            # 给 AE 收尾留一点时间（它刚被关/刚保存），再起下一个
+            self.root.after(600, self.start)
+            return
+
+        n_ok = len([r for r in self.batch_rows if r["ok"]])
+        n_bad = len(self.batch_rows) - n_ok
+        tot_f = sum(r["fixed"] for r in self.batch_rows)
+        tot_m = sum(r["missing"] for r in self.batch_rows)
+        self.log("")
+        self.log("==== 批量结果：%d 个工程，%d 成功 / %d 失败 ===="
+                 % (len(self.batch_rows), n_ok, n_bad))
+        for r in self.batch_rows:
+            self.log("  %-4s  %-34s  接上 %d / 缺 %d%s"
+                     % ("ok" if r["ok"] else "FAIL", os.path.basename(r["project"] or "?"),
+                        r["fixed"], r["missing"],
+                        ("" if r["ok"] else "  " + (r["msg"] or ""))))
+        self.log("  合计：接上 %d 条，仍缺 %d 条" % (tot_f, tot_m))
+        self.set_result("批量完成：%d 个工程，%d 成功 / %d 失败；共接上 %d 条，仍缺 %d 条"
+                        % (len(self.batch_rows), n_ok, n_bad, tot_f, tot_m),
+                        "ok" if (n_bad == 0 and tot_m == 0) else "warn")
+        self.set_status("批量已跑完（%d 个工程）" % len(self.batch_rows))
+        self.batch_total = 0
+        self.batch_done = 0
+        self._refresh_batch_hint()
 
     def _probe_ae(self):
         """点了「请先关闭 AE」之后：重新探一次，没有 AE 了就把主按钮恢复。"""

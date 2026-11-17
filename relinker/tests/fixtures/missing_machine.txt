@@ -1,0 +1,13 @@
+# 缺失素材清单  Sun Nov 15 2026 14:37:05 GMT+0800
+# 把这些文件放进素材目录后，重跑一次即可接上
+1 (1).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_6fac5f.mp4	E:\素材\02\G-Xi 02补帧镜头包\7\1 (1).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_6fac5f.mp4
+1 (55).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_827d60.mp4	E:\素材\02\G-Xi 02补帧镜头包\16\1 (55).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_827d60.mp4
+1 (56).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_d4d721.mp4	E:\素材\02\G-Xi 02补帧镜头包\16\1 (56).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_d4d721.mp4
+1 (57).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_77f8aa.mp4	E:\素材\02\G-Xi 02补帧镜头包\16\1 (57).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_77f8aa.mp4
+1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4	E:\素材\02\G-Xi 02补帧镜头包\16\1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4
+1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4	E:\素材\02\G-Xi 02补帧镜头包\16\1 (59).119.880fps.QE.HW.VFIF.S=1.0.VFI=official_4.15.FD=FORW-2.SR=realesr-animevideov3-x2_186dbf.mp4
+Again & Again.mp3	E:\ae\Again & Again.mp3
+FILMBURN_SOFT_002(1).mp4	E:\素材\FILMBURN_SOFT_002(1).mp4
+hanabi_logo.mp4	C:\Users\<user>\Downloads\hanabi_logo.mp4
+SnapInsta.to_AQPY05r3SvcTpgP948a531CjtTQUtVIVZnTR5Tllwoo3EtM5lQrewdC5Y38asaSZbsF670hd6AA8zPKTDRVrD9y9.mp4	E:\ae\SnapInsta.to_AQPY05r3SvcTpgP948a531CjtTQUtVIVZnTR5Tllwoo3EtM5lQrewdC5Y38asaSZbsF670hd6AA8zPKTDRVrD9y9.mp4
+y2mate.com - White Light Leaks for Transitions an.MP4	E:\ae\2025.1.15.cw kano\Footage\Overlays\y2mate.com - White Light Leaks for Transitions an.MP4

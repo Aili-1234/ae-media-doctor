@@ -33,6 +33,7 @@
 """
 
 import enum
+import io
 import os
 import shutil
 import subprocess
@@ -522,6 +523,34 @@ def dismiss_progress_dialogs(pid, seen=None, log=None):
             log("A2      AE 卡在「%s」进度框上，已按回车让它过去%s"
                 % (w.get("title") or "", extra), "dim")
     return n
+
+
+def capture_hung(pid, out_dir="", ae_exe="", log=None):
+    """把卡死瞬间的证据写成一个 .txt，返回路径；任何失败返回空串（**绝不抛**）。
+
+    为什么单独落盘而不是只写日志：日志是逐行的纯文本，塞不下窗口清单和插件清单；
+    而且用户发日志时爱截断。单独一个文件，下次复现直接"就发这个"，不用教。
+    """
+    emit = log or (lambda s, tag=None: None)
+    try:
+        from . import diag
+        text = diag.hung_report(pid, ae_exe=ae_exe)
+        d = out_dir or paths.log_dir()
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+        fpath = os.path.join(d, "hung-%s.txt" % time.strftime("%Y%m%d-%H%M%S"))
+        with io.open(fpath, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        return fpath
+    except Exception as e:
+        try:
+            emit("DIAG    卡死证据没写成（%s: %s）—— 不影响本次运行"
+                 % (type(e).__name__, e), "dim")
+        except Exception:
+            pass
+        return ""
 
 
 def dismiss_missing_dialogs(pid, seen=None, log=None):

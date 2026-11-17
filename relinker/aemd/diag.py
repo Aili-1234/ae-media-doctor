@@ -161,6 +161,101 @@ def ae_installs_info():
     return out
 
 
+# --------------------------------------------------------------- 卡死取证（1.1.7）
+
+def plugin_inventory(ae_exe="", limit=200):
+    """AE 内置 Plug-ins 目录的**一层**清单，按修改时间倒序。
+
+    为什么按时间：第三方插件刚装 / 刚更新，往往是「昨天还好、今天卡死」的嫌疑人，
+    时间序一眼能看出最近动过什么。只列一层不递归 —— 深挖几百个文件对判断没帮助，
+    还会让卡死当场多等几秒（那几秒用户以为程序死了）。
+    """
+    sup = os.path.dirname(ae_exe or "")
+    root = os.path.join(sup, "Plug-ins") if sup else ""
+    out = {"dir": root, "exists": False, "count": 0, "items": []}
+    if not root or not os.path.isdir(root):
+        return out
+    out["exists"] = True
+    try:
+        names = os.listdir(root)
+    except OSError as e:
+        out["error"] = str(e)
+        return out
+    rows = []
+    for n in names:
+        fp = os.path.join(root, n)
+        try:
+            st = os.stat(fp)
+        except OSError:
+            continue
+        is_dir = os.path.isdir(fp)
+        rows.append((st.st_mtime, n, is_dir, 0 if is_dir else st.st_size))
+    rows.sort(reverse=True)
+    out["count"] = len(rows)
+    for mt, n, is_dir, size in rows[:limit]:
+        out["items"].append({
+            "name": n, "dir": is_dir, "size": size,
+            "mtime": datetime.datetime.fromtimestamp(mt).isoformat(sep=" ", timespec="seconds"),
+        })
+    return out
+
+
+def hung_report(pid, ae_exe="", now=None):
+    """卡死瞬间的证据快照（纯文本）。**只读**，不改任何东西。
+
+    2026-11-16 真机：AE 打开工程时 UI 线程整个无响应，界面上只挂着一个「打开项目」框，
+    旁边还有一个插件自己的窗口。当时能拿到的证据只有「卡了」—— 没有窗口清单、
+    没有插件清单、没有版本，事后无法判断是谁。这份快照就是为了下一次不再空手。
+    """
+    from . import winproc
+    ts = (now or datetime.datetime.now()).isoformat(sep=" ", timespec="seconds")
+    L = []
+    L.append("拾链 %s —— AE 卡死证据快照" % const.APP_VER)
+    L.append("时间      %s" % ts)
+    L.append("AE 进程   pid=%r" % (pid,))
+    L.append("AE 程序   %s" % (ae_exe or "(未知)"))
+    L.append("")
+    L.append("── 窗口（可见的）：类名 / 是否可用 / 标题 ──────────────")
+    try:
+        wins = [w for w in winproc.windows_of(pid) if w.get("visible")]
+    except Exception as e:
+        wins = []
+        L.append("  (枚举失败 %s: %s)" % (type(e).__name__, e))
+    mw = None
+    for w in wins:
+        if (w.get("cls") or "").startswith("AE_CApplication"):
+            mw = w
+            break
+    for w in wins[:40]:
+        L.append("  hwnd=%-10s cls=%-30s enabled=%-5s %r"
+                 % (w.get("hwnd"), w.get("cls"), w.get("enabled"), w.get("title")))
+    L.append("")
+    L.append("── 主窗口是否无响应 ─────────────────────────────────")
+    if mw is None:
+        L.append("  没找到 AE 主窗口（AE_CApplication*）")
+    else:
+        try:
+            L.append("  main hwnd=%s  is_hung=%s"
+                     % (mw.get("hwnd"), winproc.is_hung(mw.get("hwnd"))))
+        except Exception as e:
+            L.append("  判定失败：%s: %s" % (type(e).__name__, e))
+    L.append("")
+    L.append("── 插件目录（按修改时间倒序：最近动过的最可疑）─────")
+    inv = plugin_inventory(ae_exe)
+    L.append("  %s  （%s 项）" % (inv.get("dir") or "(无)", inv.get("count")))
+    if not inv.get("exists"):
+        L.append("  （目录不存在，或没传 AE 程序路径）")
+    for it in inv.get("items", [])[:40]:
+        L.append("  %-20s %-8s %s"
+                 % (it["mtime"], "目录" if it["dir"] else "%d B" % it["size"], it["name"]))
+    L.append("")
+    L.append("── 怎么用这份文件 ───────────────────────────────────")
+    L.append("  1) 下次同一工程再卡，把这份文件 + logs 目录下最新的 .log 一起发出来；")
+    L.append("  2) 若稳定复现：先只留 Plug-ins 里最近的 1-2 项，再试一次（插件二分）；")
+    L.append("  3) 别点「以安全模式启动」—— 那会改首选项，把现场弄丢。")
+    return "\n".join(L) + "\n"
+
+
 # --------------------------------------------------------------- 事件日志
 
 def parse_event_time(text, now=None):
@@ -287,6 +382,9 @@ _SCRUB_RULES = (
     (re.compile(r"S-1-5-21(?:-\d+)+"), "S-1-5-21-**"),
     (re.compile(r"(?i)\bDESKTOP-[A-Z0-9]{4,20}\\[^\s\"'<>]+"), r"DESKTOP-****\\<user>"),
     (re.compile(r"(?i)([A-Z]:\\Users\\)[^\\\s\"'<>]+"), r"\1<user>"),
+    # settings.json 这类**本身就是 JSON 文本**的条目里，路径是双反斜杠（C:////Users////李），
+    # 上面那条单反斜杠规则匹配不到 —— 2026-11-17 诊断包回归就是这么漏的。
+    (re.compile(r"(?i)([A-Z]:\\\\Users\\\\)[^\\\s\"'<>]+"), r"\1<user>"),
     (re.compile(r"(?i)(User Name:\s*)\S+"), r"\1<user>"),
     (re.compile(r"(?i)(User:\s*)\S+"), r"\1<user>"),
 )

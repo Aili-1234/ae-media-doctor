@@ -13,8 +13,11 @@
   A. jsx.render   ↔ app.build_jsx        同一组输入 → 生成的 JSX 文本逐字节相同
   B. scanner.short_key ↔ app._short_key  语料双向一致
   C. scanner.build_index ↔ app.build_media_index  同一棵临时树 → JSON 文件逐字节相同
-  D. reports.count_relink_log ↔ app._count_relink_log  真实日志夹具 → 三个计数相同
+  D. reports.count_relink_log ↔ app._count_relink_log  仓库内真机日志夹具 → 三个计数相同
   另加：reports.summary_line 复现真机那句话；everything.index_state 三态（桩掉 subprocess）
+
+夹具在 `tests/fixtures/`（relink_machine.log / report_machine.json / missing_machine.txt），
+随仓库走、不依赖本机任何目录。**有 SKIP 就返回 2**：跳过不等于通过。
 """
 
 import io
@@ -33,9 +36,17 @@ from aemd import console
 console.harden()   # 默认 GBK 控制台下也不许因为符号打不出来而崩
 
 V1_APP = r"C:\Users\李\Documents\deepseek-harness\default-workspace\ae-tools\media-doctor\app.py"
-FIXTURE_DIR = r"D:\ae\别人工程\again (1)\again\.ae_doctor"
-# v1.9.8 那一代把结果件留在工程根 —— 同一批数字（32/0/21/11/1）的另一个出处
-LEGACY_FIXTURE_DIR = r"D:\ae\别人工程\again (1)\again"
+
+# 夹具**在仓库里**（2026-11-17 起）。
+#
+# 以前读的是真机工程目录 `D:\ae\...\again\.ae_doctor`，而 `runner.prepare()` 每轮开跑都会
+# `clear_state()` 把上一次的结果件清掉 —— 于是 D2 变成「有夹具就跑、没夹具就 SKIP」。
+# 跳过在汇总里跟通过长得一样，这是最危险的一种绿：它掩盖的是「真机数字有没有被改变」。
+# 现在夹具随仓库走：文件缺了就是 FAIL（说明有人删了），不允许再静默跳过。
+FIXTURE_DIR = os.path.join(ROOT, "tests", "fixtures")
+FIXTURE_REPORT = os.path.join(FIXTURE_DIR, "report_machine.json")
+FIXTURE_MISSING = os.path.join(FIXTURE_DIR, "missing_machine.txt")
+FIXTURE_LOG = os.path.join(FIXTURE_DIR, "relink_machine.log")
 
 PASS, FAIL, SKIPPED = [], [], []
 
@@ -230,9 +241,9 @@ def _():
 @case("D. reports.count_relink_log vs v1.9.8 _count_relink_log：真机日志夹具一致")
 def _():
     from aemd import reports
-    log = r"C:\Users\李\AppData\Roaming\AE素材医生\logs\relink-again-20261115-144225.log"
+    log = FIXTURE_LOG
     if not os.path.isfile(log):
-        raise AssertionError("日志夹具不见了：%s" % log)
+        raise AssertionError("日志夹具缺失（仓库文件，缺了就是缺了）：%s" % log)
     a = APP._count_relink_log(log)
     b = reports.count_relink_log(log)
     if tuple(a) != tuple(b):
@@ -244,21 +255,14 @@ def _():
 @case("D2. reports 解析真机报告：stats 与 summary_line 复现「21 / 11 / 1」")
 def _():
     from aemd import reports
-    # 夹具位置有两个：v2 的 .ae_doctor\ 与 v1.9.8 留在工程根的老文件。
-    # 2026-11-15 16:43 那次真机回归在开跑时清掉了 .ae_doctor（clear_state 会清旧结果），
-    # 只剩工程根这一份 —— 两份都能复现同一批数字，所以按优先级找，都没有就跳过（不自己编夹具）。
-    cand = [FIXTURE_DIR, LEGACY_FIXTURE_DIR]
-    fdir = ""
-    for d in cand:
-        if os.path.isfile(os.path.join(d, "_relink_report.json")):
-            fdir = d
-            break
-    if not fdir:
-        raise SkipTest("没有真机报告夹具（找过 %s）—— 跑一轮真修复后会生成，先跳过"
-                       % "、".join(cand))
-    rep = reports.parse_report(os.path.join(fdir, "_relink_report.json"))
+    # 夹具在 tests/fixtures/（随仓库走）。**不许 SKIP**：这份数字是 1.1.x 所有改动的
+    # 基线（32/0/21/11/1），它要是没了，等于「改了什么都不用负责」。
+    for p in (FIXTURE_REPORT, FIXTURE_MISSING):
+        if not os.path.isfile(p):
+            raise AssertionError("夹具缺失（仓库文件）：%s" % p)
+    rep = reports.parse_report(FIXTURE_REPORT)
     if rep is None:
-        raise AssertionError("报告解析返回 None（夹具在 %s）" % fdir)
+        raise AssertionError("报告解析返回 None（夹具 %s）" % FIXTURE_REPORT)
     st = rep["stats"]
     expect = {"total": 32, "ok": 0, "fixed": 21, "missing": 11, "ambiguous": 1, "zeroByte": 0}
     # 1.1.0 起 stats 多一个 mapped；老报告没有这个键 → 必须补 0（不是缺键、不是 None）。
@@ -274,7 +278,7 @@ def _():
         raise AssertionError("summary_line 不一致：%r" % (line,))
     if reports.log_writable(rep) is not True:
         raise AssertionError("logWritable 应为 True，实际 %r" % (reports.log_writable(rep),))
-    miss = reports.parse_missing(os.path.join(fdir, "_relink_missing.txt"))
+    miss = reports.parse_missing(FIXTURE_MISSING)
     if len(miss) != 11:
         raise AssertionError("缺件解析出 %d 条（应为 11）" % len(miss))
     if not miss[0]["name"].endswith("_6fac5f.mp4") or not miss[0]["original"].startswith("E:\\素材\\02\\"):
@@ -384,7 +388,11 @@ def main():
         for n, w in SKIPPED:
             print("  SKIP  %s —— %s" % (n, w))
         print("")
-    print("ALL PASS（%d 组对拍一致，%d 组因缺夹具跳过）" % (len(PASS), len(SKIPPED)))
+        # 跳过**不算通过**：退出码 2，让 selftest / CI 必须正视它。
+        # 以前这里返回 0 并照样打印 ALL PASS —— 那是 2026-11-17 修掉的「假绿」。
+        print("%d 组被跳过 —— 跳过不等于通过（退出码 2）" % len(SKIPPED))
+        return 2
+    print("ALL PASS（%d 组对拍一致，0 组跳过）" % len(PASS))
     return 0
 
 

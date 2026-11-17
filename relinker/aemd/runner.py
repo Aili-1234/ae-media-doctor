@@ -27,8 +27,10 @@
 """
 
 import enum
+import io
 import json
 import os
+import sys
 import time
 
 from . import aehost, const, jsx, mapping, paths, reports, scanner, winproc
@@ -350,6 +352,18 @@ class Run(object):
                     self.log("DIAG    AE 主窗口无响应（打开工程时卡死，不是启动慢）—— 常见原因：插件冲突、"
                              "字体解析、网络盘/移动硬盘掉线。%d 秒后仍不动就判失败，届时手动开一次该工程"
                              "确认真能打开，再排查插件。" % (const.HUNG_WAIT_S,), "warn")
+                    # 1.1.7：卡死当下就把现场抓下来（窗口清单 / 插件清单 / 版本）。
+                    # 以前只会说"卡了"，事后没人能判断是谁 —— 这次开始不再空手。
+                    try:
+                        ev = aehost.capture_hung(
+                            getattr(self.launch, "pid", None) or 0,
+                            os.path.dirname(self.log_path) if self.log_path else "",
+                            getattr(self.launch, "exe", "") or "")
+                        if ev:
+                            self.log("DIAG    卡死现场已存到 %s（窗口 / 插件 / 版本）—— 下次复现请连同它一起发"
+                                     % ev, "dim")
+                    except Exception:
+                        pass
 
         if el > limit:
             # 失败也先结算一次（v1.9.8 的 _fail_slow 就这么做）：用户最想知道的不是
@@ -389,6 +403,36 @@ class Run(object):
 
     # ------------------------------------------------------------ 结算
 
+    #: 需要提到结果区的日志标签（1.1.7）。只收「接上了、但可能有问题」这一类 ——
+    #: 用户不必翻日志就知道手上这份结果有几处要自己核。
+    #: ZERO 也算：0 字节素材被 replace 上去，AE 里看着是接上了，实际播不动。
+    _WARN_TAGS = ("SEQ-OFFSET ", "SEQ-WARN  ", "LAYER-WARN ", "RELINK-SUSPECT ", "ZERO      ")
+    _WARN_LIMIT = 5
+
+    def _collect_warns(self):
+        """从本次日志里抓需要人核一眼的行（最多 LIMIT 条，其余折成一句）。
+
+        **存原始行**而不是改写成中文短句：用户拿着这句话能在日志里 grep 到同一处，
+        改写过的文案反而对不上号。
+        """
+        p = self.log_path
+        if not p or not os.path.isfile(p):
+            return []
+        hits = []
+        try:
+            with io.open(p, encoding="utf-8", errors="replace") as fh:
+                for ln in fh:
+                    t = ln.rstrip()
+                    if t.startswith(self._WARN_TAGS):
+                        hits.append(t)
+        except OSError:
+            return []
+        if len(hits) > self._WARN_LIMIT:
+            extra = len(hits) - self._WARN_LIMIT
+            return hits[:self._WARN_LIMIT] + [
+                "…另有 %d 条同类提醒，见日志 %s" % (extra, os.path.basename(p))]
+        return hits
+
     def finish(self, report=None):
         """生成 `Result`（幂等）。CLI 与界面都从 `self.result` / `Poll.report` 取数。"""
         if self.result is not None:
@@ -396,12 +440,15 @@ class Run(object):
         rep = report if report is not None else (self.report or {})
         stats = rep.get("stats") or {}
         stats = dict((k, _as_int(stats.get(k))) for k in
-                     ("total", "ok", "fixed", "missing", "ambiguous", "zeroByte"))
+                     ("total", "ok", "fixed", "missing", "ambiguous", "zeroByte", "mapped"))
         missing = reports.parse_missing(self.missing_path) if self.missing_path else []
         warnings = []
         lw = rep.get(const.REPORT_KEY_LOG_WRITABLE, None)
+        # 这里存**纯文本**：界面统一加「WARN      」前缀。以前这里自己带了一遍，
+        # 界面上就成了「WARN      WARN      过程日志…」（一直没人看见，因为极少触发）。
         if lw is False:
-            warnings.append("WARN      过程日志没写成（目录可能只读），以报告为准")
+            warnings.append("过程日志没写成（目录可能只读），以报告为准")
+        warnings.extend(self._collect_warns())
         self.result = Result(
             report=rep, stats=stats, summary=reports.summary_line(stats),
             missing=missing, log_writable=lw, log_path=self.log_path,
@@ -619,9 +666,9 @@ def _as_int(v):
 # ================================================================ CLI
 
 USAGE = """用法：
-  拾链.exe --cli <工程.aep> [--dry] [--no-save] [--roots 目录1;目录2]
+  拾链.exe --cli <工程.aep> [更多 .aep 或目录…] [--dry] [--no-save] [--roots 目录1;目录2]
                               [--ae 2025] [--yes] [--close-ae] [--manual]
-                              [--mapping 映射表.json]
+                              [--mapping 映射表.json] [--only-missing] [--json]
 
   --dry      只体检，不改工程
   --no-save  改了但不自动保存
@@ -631,6 +678,7 @@ USAGE = """用法：
   --close-ae 跑完把**本次拉起的那个** AE 关掉（默认不关；旧 --yes 的「跑完关」语义搬到这里）
   --manual   只生成脚本，不启动 AE
   --only-missing  只重试上一次没接上的那几条（用工程 .ae_doctor 里的缺件清单）
+  --json     只往 stdout 打一坨结构化结果，日志走 stderr（方便批处理 / 接别的工具）
   --mapping  手工映射表（默认 %APPDATA%\\AE素材医生\\mapping.json）
 
 退出码：0 成功 / 1 超时 / 2 参数或 AE 问题 / 3 AE 占用且关不掉 / 4 复制工程失败 / 5 生成脚本失败
@@ -639,15 +687,27 @@ USAGE = """用法：
 
 def parse_cli(argv):
     """解析 CLI 参数 → dict。不认识的参数抛 ValueError（退出码 2 的来源）。"""
-    out = {"project": "", "dry": False, "save": True, "roots": [], "ae": "",
+    out = {"project": "", "projects": [], "dry": False, "save": True, "roots": [], "ae": "",
            "yes": False, "close_ae": False, "manual": False, "mapping": "",
-           "only_missing": False}
+           "only_missing": False, "json": False}
     args = list(argv)
     if not args:
         raise ValueError("缺少工程路径")
     i = 0
     while i < len(args):
         a = args[i]
+        if a == "--cli":
+            # 1.1.7：--cli 后面可以跟多个（文件 / 目录），连续吸收到下一个 -- 开关为止。
+            # 这样 `--cli a.aep b.aep D://工程目录 --dry` 与老的单工程写法都成立。
+            i += 1
+            got = []
+            while i < len(args) and not str(args[i]).startswith("-"):
+                got.append(args[i])
+                i += 1
+            if not got:
+                raise ValueError("--cli 后面要跟至少一个 .aep（或装着 .aep 的目录）")
+            out["projects"].extend(got)
+            continue
         if a == "--dry":
             out["dry"] = True
         elif a == "--no-save":
@@ -660,6 +720,8 @@ def parse_cli(argv):
             out["manual"] = True
         elif a == "--only-missing":
             out["only_missing"] = True
+        elif a == "--json":
+            out["json"] = True
         elif a == "--roots":
             i += 1
             if i >= len(args):
@@ -678,24 +740,146 @@ def parse_cli(argv):
         elif a.startswith("-"):
             raise ValueError("不认识的参数：%s" % a)
         else:
-            if out["project"]:
-                raise ValueError("只能给一个工程文件")
-            out["project"] = a
+            # 位置参数也当工程收（`拾链 a.aep b.aep`），不再报"只能给一个"
+            out["projects"].append(a)
         i += 1
-    if not out["project"]:
+    if not out["projects"]:
         raise ValueError("缺少工程路径")
+    out["project"] = out["projects"][0]
     return out
 
 
-def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
+def expand_projects(specs, max_depth=1):
+    """把「文件 / 目录 / 多个」摊平成工程清单 → ``(projects, notes)``。
+
+    目录只往下走 **两层**（目录本身 + 一层子目录）：剪辑工程通常就是
+    `本季/第01集/xxx.aep` 这个深度。再深就容易扫到缓存目录、备份目录，
+    反而把用户没想处理的东西卷进来 —— 批量最怕的不是慢，是"顺手改了不该改的"。
+    """
+    out, notes, seen = [], [], set()
+
+    def add(path):
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(os.path.abspath(path))
+
+    def walk(d, depth):
+        try:
+            names = sorted(os.listdir(d))
+        except OSError as e:
+            notes.append("%s 读不了：%s" % (d, e))
+            return
+        for n in names:
+            fp = os.path.join(d, n)
+            if os.path.isdir(fp):
+                if depth < max_depth:
+                    walk(fp, depth + 1)
+            elif n.lower().endswith(".aep"):
+                add(fp)
+
+    for s0 in (specs or []):
+        s1 = (s0 or "").strip().strip('"')
+        if not s1:
+            continue
+        if os.path.isdir(s1):
+            walk(s1, 0)
+        elif os.path.isfile(s1):
+            if s1.lower().endswith(".aep"):
+                add(s1)
+            else:
+                notes.append("不是 .aep，跳过：%s" % s1)
+        else:
+            notes.append("找不到：%s" % s1)
+    return out, notes
+
+
+def _argv_for(project, opt):
+    """把选项还原成 argv（批量里每个工程复用同一组开关，且**不带 --json**）。"""
+    a = ["--cli", project]
+    if opt.get("dry"):
+        a.append("--dry")
+    if not opt.get("save", True):
+        a.append("--no-save")
+    if opt.get("yes"):
+        a.append("--yes")
+    if opt.get("close_ae"):
+        a.append("--close-ae")
+    if opt.get("manual"):
+        a.append("--manual")
+    if opt.get("only_missing"):
+        a.append("--only-missing")
+    if opt.get("ae"):
+        a.extend(["--ae", opt["ae"]])
+    if opt.get("mapping"):
+        a.extend(["--mapping", opt["mapping"]])
+    if opt.get("roots"):
+        a.extend(["--roots", ";".join(opt["roots"])])
+    return a
+
+
+def result_json(res):
+    """`Result` → 可序列化 dict（`--json` 的 stdout 内容）。
+
+    单独抽出来是为了能单测：批处理调用方靠这些键名写脚本，键名一改就断，
+    所以它得有自己的测试，而不是"跑一次看着对"。
+    """
+    st = dict(res.stats or {})
+    return {
+        "ok": True,
+        "code": 0,
+        "summary": res.summary,
+        "stats": st,
+        "mapped": int(st.get("mapped") or 0),
+        "missing": [{"name": m.get("name") or "", "original": m.get("original") or ""}
+                    for m in (res.missing or [])],
+        "warnings": list(res.warnings or []),
+        "report": res.report_path,
+        "log": res.log_path,
+        "missing_txt": res.missing_path,
+        "elapsed_s": round(float(res.elapsed or 0.0), 1),
+    }
+
+
+def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
     """命令行跑一次 → 退出码（契约见模块 docstring）。全同步，不建线程。"""
-    emit = log or (lambda msg, tag=None: print(msg))
+    # --json：日志一律走 stderr，stdout 只留最后一坨 JSON。
+    # 在 parse_cli 之前就分流 —— 参数错也要输出结构化结果，否则调用方拿不到原因。
+    as_json = "--json" in argv
+    if as_json and log is None:
+        def emit(msg, tag=None):
+            print(msg, file=sys.stderr, flush=True)
+    else:
+        emit = log or (lambda msg, tag=None: print(msg))
+
+    def done(code, error="", extra=None):
+        """统一出口：非 --json 时只返回退出码（行为与以前一模一样）。
+
+        `collect` 是给批量用的：每个工程跑完把自己的结果写回那一行，
+        免得为了汇总再去解析 stdout。
+        """
+        if collect is not None:
+            if error:
+                collect["error"] = error
+            if extra:
+                collect.update(extra)
+        if not as_json:
+            return code
+        doc = {"ok": code == 0, "code": code}
+        if error:
+            doc["error"] = error
+        if extra:
+            doc.update(extra)
+        print(json.dumps(doc, ensure_ascii=False), flush=True)
+        return code
+
     try:
         opt = parse_cli(argv)
     except ValueError as e:
         emit("参数有问题：%s" % e, "bad")
         emit(USAGE)
-        return 2
+        return done(2, "参数有问题：%s" % e)
 
     ae_exe = ""
     if opt["ae"]:
@@ -707,7 +891,18 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
         if not ae_exe:
             emit("没找到 AE %s（已装的有：%s）"
                  % (want, "、".join(n for n, _e in aehost.find_installs()) or "一个都没有"), "bad")
-            return 2
+            return done(2, "没找到 AE %s" % want)
+
+    # 1.1.7 批量：--cli 后面可能是一个文件、一个目录、或一串。先摊平再决定走哪条路。
+    projects, notes = expand_projects(opt.get("projects") or [opt["project"]])
+    for n in notes:
+        emit("NOTE     %s" % n, "dim")
+    if not projects:
+        emit("没有可处理的工程（%s）" % "、".join(opt.get("projects") or []), "bad")
+        return done(2, "没有可处理的工程")
+    if len(projects) > 1:
+        return _run_many(projects, opt, emit, as_json, done, poll_interval, max_loop_s)
+    opt["project"] = projects[0]
 
     # D3：默认**不关**本次 AE。--close-ae 才关（旧 --yes 的「跑完关」并到这里），
     # 关的仍然只可能是我们自己拉起的那只（aehost.close_own_ae 的白名单）。
@@ -740,7 +935,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
         if not opt["yes"]:
             emit("检测到已有 AE 在运行（PID %s）—— 请先关掉它，或加 --yes 让本工具关掉再跑"
                  % ",".join(str(p) for p, _w in foreign), "bad")
-            return 3
+            return done(3, "已有 AE 在运行：%s" % ",".join(str(p) for p, _w in foreign))
         for pid, _w in foreign:
             emit("CLOSE   已关掉你开着的 AE PID %s（--yes）" % pid)
             try:
@@ -748,26 +943,26 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
                 winproc.terminate_tree(pid, wait=8)
             except Exception as e:
                 emit("关不掉 AE PID %s：%s" % (pid, e), "bad")
-                return 3
+                return done(3, "关不掉 AE PID %s：%s" % (pid, e))
         _sleep(2.5)      # 单实例锁释放需要一点时间
 
     try:
         run.start()
     except aehost.BlockedByForeignAE:
         flush_pending()
-        return 3
+        return done(3, "有别的 AE 占着单实例锁")
     except CopyProjectError as e:       # 复制工程失败
         flush_pending()
         emit("%s" % e, "bad")
-        return 4
+        return done(4, "%s" % e)
     except ScriptGenError as e:         # 生成脚本失败
         flush_pending()
         emit("%s" % e, "bad")
-        return 5
+        return done(5, "%s" % e)
     except ValueError as e:
         flush_pending()
         emit("%s" % e, "bad")
-        return 2
+        return done(2, "%s" % e)
     flush_pending()
 
     t0 = _now()
@@ -789,7 +984,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
                 emit("诊断：%s" % m, "warn")
         if max_loop_s is not None and _now() - t0 > max_loop_s:
             emit("（测试中止：超过 max_loop_s）", "bad")
-            return 1
+            return done(1, "测试中止：超过 max_loop_s")
         _sleep(poll_interval)
 
     if p.state is State.DONE:
@@ -801,8 +996,61 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None):
         emit("报告 %s" % res.report_path)
         if res.missing_path:
             emit("缺件清单 %s" % res.missing_path)
-        return 0
+        return done(0, extra=result_json(res))
     flush_pending()
     emit("")
     emit(p.message or "没能完成")
-    return 1
+    return done(1, p.message or "没能完成")
+
+
+def _short_path(path, width=46):
+    """汇总表里的工程名：只留「父目录/文件名」，太长就从左边截。"""
+    p = str(path or "").replace("\\", "/")
+    parts = [x for x in p.split("/") if x]
+    s2 = "/".join(parts[-2:]) if len(parts) >= 2 else p
+    return s2 if len(s2) <= width else "…" + s2[-width:]
+
+
+def _run_many(projects, opt, emit, as_json, done, poll_interval=0.5, max_loop_s=None):
+    """串行跑一批工程，最后给一张汇总表。
+
+    为什么串行：AE 是单实例的，并行只会互相抢锁；批量真正的价值是"一觉醒来都跑完了"，
+    不是"快 3 分钟"。单个失败**不打断**其余 —— 批量最怕跑到第 7 个就停，
+    用户还得自己挑剩下哪些没跑。
+    """
+    rows = []
+    totals = {"projects": len(projects), "ok": 0, "failed": 0,
+              "fixed": 0, "missing": 0, "mapped": 0, "elapsed_s": 0.0}
+    for i, proj in enumerate(projects, 1):
+        emit("")
+        emit("==== [%d/%d] %s ====" % (i, len(projects), proj))
+        row = {"project": proj, "code": 1}
+        # 内层不带 --json：stdout 只能有一坨（外层这一坨），否则管道里就是垃圾
+        code = run_cli(_argv_for(proj, opt), log=emit,
+                       poll_interval=poll_interval, max_loop_s=max_loop_s, collect=row)
+        row["code"] = code
+        rows.append(row)
+        st = row.get("stats") or {}
+        if code == 0:
+            totals["ok"] += 1
+        else:
+            totals["failed"] += 1
+        for k in ("fixed", "missing", "mapped"):
+            totals[k] += int(st.get(k) or 0)
+        totals["elapsed_s"] = round(totals["elapsed_s"] + float(row.get("elapsed_s") or 0.0), 1)
+
+    emit("")
+    emit("==== 批量结果：%d 个工程，%d 成功 / %d 失败 ===="
+         % (len(rows), totals["ok"], totals["failed"]))
+    for r in rows:
+        if r["code"] == 0:
+            emit("  ok    %-48s %s" % (_short_path(r["project"]), r.get("summary") or ""))
+        else:
+            emit("  FAIL  %-48s %s" % (_short_path(r["project"]),
+                                       r.get("error") or "退出码 %s" % r["code"]))
+    emit("  合计：接上 %d 条，仍缺 %d 条%s"
+         % (totals["fixed"], totals["missing"],
+            ("，其中 %d 条按映射表接上" % totals["mapped"]) if totals["mapped"] else ""))
+    code = 0 if totals["failed"] == 0 else 1
+    return done(code, "" if code == 0 else "%d 个工程失败" % totals["failed"],
+                {"projects": rows, "totals": totals})

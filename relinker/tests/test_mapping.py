@@ -16,6 +16,7 @@
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 
@@ -253,6 +254,55 @@ def _():
         raise AssertionError("--mapping 后面缺文件时应当报参数错")
     need(runner.Options().mapping_path == "", "Options 默认 mapping_path 应当是空串")
     need("--mapping" in runner.USAGE, "用法里没写 --mapping")
+
+
+@check("merge：别人新增的条目必须保留（这就是并发保护本身）")
+def _():
+    base = {"a.mp4": "D:/x/a.mp4"}
+    mine = {"a.mp4": "D:/x/a.mp4", "b.mp4": "D:/x/b.mp4"}
+    disk = {"a.mp4": "D:/x/a.mp4", "c.mp4": "D:/x/c.mp4"}   # 命令行中间加的
+    out, st = mapping.merge(base, mine, disk)
+    need("c.mp4" in out, "别处新增的 c.mp4 被吃掉了：%r" % (out,))
+    need(out.get("b.mp4") == "D:/x/b.mp4", "自己新增的 b.mp4 丢了：%r" % (out,))
+    need(st["kept"] == 1, "统计应当说保留了 1 条别人的，实得 %r" % (st,))
+    need(st["total"] == 3, "合并后应当 3 条，实得 %r" % (st,))
+
+
+@check("merge：我删掉的不能被盘上的旧记录复活")
+def _():
+    base = {"a.mp4": "D:/a.mp4", "b.mp4": "D:/b.mp4"}
+    mine = {"a.mp4": "D:/a.mp4"}          # 用户点了「删除所选」删掉 b
+    disk = {"a.mp4": "D:/a.mp4", "b.mp4": "D:/b.mp4"}
+    out, st = mapping.merge(base, mine, disk)
+    need("b.mp4" not in out, "删掉的 b.mp4 又活了：%r（用户会以为删除按钮坏了）" % (out,))
+    need(st["removed"] == 1, "统计应当说删了 1 条，实得 %r" % (st,))
+
+
+@check("merge：同一个键两边都改 -> 以「刚动手的这次」为准")
+def _():
+    out, st = mapping.merge({"a.mp4": "D:/old.mp4"}, {"a.mp4": "D:/new.mp4"},
+                            {"a.mp4": "D:/other.mp4"})
+    need(out["a.mp4"] == "D:/new.mp4", "冲突时应当以本次为准，实得 %r" % (out["a.mp4"],))
+    need(st["kept"] == 0, "冲突不该算「保留别人的」：%r" % (st,))
+
+
+@check("save_merged：端到端落盘后两条都在，且不留 .tmp")
+def _():
+    d = tempfile.mkdtemp(prefix="aemd_mapmerge_")
+    try:
+        p = os.path.join(d, "mapping.json")
+        mapping.save({"a.mp4": "D:/a.mp4"}, p)
+        base = mapping.load(p)                       # 界面打开时看到的
+        mapping.save({"a.mp4": "D:/a.mp4", "c.mp4": "D:/c.mp4"}, p)   # 命令行中间加了一条
+        merged, st = mapping.save_merged({"a.mp4": "D:/a.mp4", "b.mp4": "D:/b.mp4"}, base, p)
+        disk = mapping.load(p)
+        need(set(disk) == {"a.mp4", "b.mp4", "c.mp4"},
+             "落盘结果应当三条都在，实得 %r" % (sorted(disk),))
+        need(merged == disk, "返回值与盘上不一致")
+        need(st["kept"] == 1, "统计应当保留 1 条：%r" % (st,))
+        need(not os.path.exists(p + ".tmp"), "留下了 .tmp 临时文件")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def main():

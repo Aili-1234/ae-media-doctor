@@ -703,6 +703,27 @@ def _():
     need("ALL PASS" in text, "test_mapping 没打印 ALL PASS：%s" % text.strip()[-400:])
 
 
+@check("真机夹具随仓库走：tests/fixtures 三件齐全且能复现 21/11/1")
+def _():
+    # 第 33 项。来历：p1_parity 的 D2 原先读工程目录 `.ae_doctor`，而每轮开跑都会
+    # clear_state() 清掉上一次结果 —— 于是它变成「有就跑、没就 SKIP」，而 SKIP 在汇总里
+    # 跟 PASS 长得一样。这是最危险的一种绿。现在夹具进仓库，缺了必须红。
+    from aemd import reports
+    fx = os.path.join(ROOT, "tests", "fixtures")
+    for fn in ("relink_machine.log", "report_machine.json", "missing_machine.txt"):
+        p = os.path.join(fx, fn)
+        need(os.path.isfile(p), "夹具缺失（应当随仓库走）：%s" % p)
+        need(os.path.getsize(p) > 100, "夹具 %s 只有 %d 字节，像被截断过"
+             % (fn, os.path.getsize(p) if os.path.exists(p) else -1))
+    rep = reports.parse_report(os.path.join(fx, "report_machine.json"))
+    need(rep is not None, "报告夹具解析不出来（JSON 坏了？）")
+    st = rep["stats"]
+    need((st.get("total"), st.get("fixed"), st.get("missing"), st.get("ambiguous")) == (32, 21, 11, 1),
+         "夹具里的真机数字被改了：%r" % (st,))
+    n = len(reports.parse_missing(os.path.join(fx, "missing_machine.txt")))
+    need(n == 11, "缺件夹具应当 11 条，实得 %d" % n)
+
+
 def main():
     print("%s %s —— 自检（不启动界面、不碰 AE）" % (aemd.APP_NAME, aemd.APP_VER))
     print("项目根：%s" % ROOT)

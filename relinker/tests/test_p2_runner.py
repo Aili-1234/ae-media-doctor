@@ -525,6 +525,44 @@ def _():
     need((done2, total2) == (1, 0), "坏 ITEMS 行应当忽略，实得 %r" % ((done2, total2),))
 
 
+@case("L. 结果区的提醒：从日志里只挑「接上了但要核一眼」的行，最多 5 条")
+def _():
+    """1.1.7：SEQ-* / LAYER-WARN / RELINK-SUSPECT / ZERO 这几类，用户不该靠翻日志才发现。
+
+    它们都发生在「已经写成 RELINKED」之后 —— 光看结论行是干净的，问题在细节里。
+    """
+    d = tempfile.mkdtemp(prefix="aemd_warn_")
+    try:
+        run = runner.Run(project=__file__, roots=[ROOT])
+        run.log_path = os.path.join(d, "x.log")
+        open(run.log_path, "w", encoding="utf-8").write(
+            "OPEN      D:/a.aep\n"
+            "OK        a.mp4  |  D:/a.mp4\n"
+            "RELINKED  b.mp4  |  E:/b.mp4  =>  D:/b.mp4  [全名匹配]\n"
+            "SEQ-OFFSET c_0001.png  |  D:/c_0001.png  |  帧号 0005 -> 0001\n"
+            "LAYER-WARN d.psd  |  D:/d.psd  |  请核对图层\n"
+            "ZERO      e.mov  |  D:/e.mov  (文件 0 字节)\n"
+            "RELINK-SUSPECT f.mp4  |  D:/f.mp4  |  没真接上\n"
+            "SEQ-WARN  g.png  |  D:/g.png  |  原来是序列\n"
+            "ZERO      j.mov  |  D:/j.mov  (文件 0 字节)\n"
+            "SEQ-OK    h_0001.png  |  D:/h_0001.png  |  5 帧\n"
+            "RELINKED  i.mp4  |  E:/i.mp4  =>  D:/i.mp4  [基名匹配(2 个候选)]\n"
+            "SUMMARY   total=9 ok=1 fixed=4 missing=0 ambiguous=0 zeroByte=1 mapped=0\n")
+        got = run._collect_warns()
+        need(len(got) == 6, "应当是 5 条提醒 + 1 条折行说明，实得 %d 条：%r" % (len(got), got))
+        need(got[-1].startswith("…另有"), "超限要折成一句「另有 N 条」，实得 %r" % (got[-1],))
+        blob = "\n".join(got)
+        for must in ("SEQ-OFFSET", "LAYER-WARN", "ZERO", "RELINK-SUSPECT"):
+            need(must in blob, "少了 %s：%r" % (must, got))
+        need("SEQ-OK" not in blob, "SEQ-OK 是正常行，不该占提醒位")
+        need("OK        a.mp4" not in blob, "普通 OK 行不该进结果区")
+
+        run.log_path = os.path.join(d, "nope.log")
+        need(run._collect_warns() == [], "日志不存在必须返回空表，不能抛")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     total = len(PASS) + len(FAIL)
     print("")

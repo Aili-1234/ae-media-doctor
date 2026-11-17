@@ -267,6 +267,90 @@ function wantedByOnly(it){
      r"""    for (var i=1;i<=proj.numItems;i++){
         if (proj.item(i) instanceof FootageItem) relink(proj.item(i));
     }"""),
+    # 1.1.7：图像序列护栏（纯新增：认形态 / 数同前缀帧 / 接上后复查）
+    (r"""/* ===== 1.1.7 图像序列（img_0001.png 这类） =====
+
+   为什么必须单独处理：序列在 AE 里是**一个** FootageItem，但磁盘上是几百个文件。
+   接上之后有两种静默错误：
+     · replace() 只指向一帧 -> 播放只有 1 帧（画面卡住，日志却写着 RELINKED）
+     · 帧号对不上（原 img_0005 接成 img_0001）-> 整条镜头错位 4 帧
+   这两种都不抛异常，日志看着全绿。所以这里不阻止 replace（挡掉反而少接一条），
+   而是在接上之后**把话说清**：同目录有几帧、帧号有没有变。
+
+   判据只靠文件名 + 目录列举，不依赖 AE 私有属性 —— ExtendScript 没有「这是不是序列」
+   的可靠接口，硬编一个"看起来对"的判据只会骗自己。 */
+
+/* 只有这些扩展名才可能是图像序列。psd 另有专门的「分层素材」核对提示。 */
+var SEQ_EXT = { png:1, jpg:1, jpeg:1, tif:1, tiff:1, exr:1, dpx:1, tga:1, hdr:1, cin:1, sgi:1, bmp:1 };
+var _seqCache = {};
+
+/* "img_0001.png" -> { prefix:"img_", num:"0001", digits:4, ext:"png" }；不像序列返回 null。
+   prefix 为空（纯数字名 2024.png）不算：那多半是年份/编号，不是序列帧。 */
+function seqParts(name){
+    var nm = String(name || "");
+    var ext = extOf(nm);
+    if (!SEQ_EXT[ext]) return null;
+    var m = baseOf(nm).match(/^(.*?)([0-9]{2,})$/);
+    if (!m || !m[1]) return null;
+    return { prefix: m[1], num: m[2], digits: m[2].length, ext: ext };
+}
+
+/* 同目录、同前缀、同位数、同扩展名的帧数（带缓存：同一序列一次运行只数一次）。
+   阈值 >= 2 才算序列 —— 只有一个 img_0001.png 时，多半是单张图碰巧带编号。 */
+function seqFrames(path){
+    var sp = seqParts(baseNameOf(path));
+    if (!sp) return 0;
+    var dir = dirOf(path);
+    if (!dir) return 0;
+    var key = dir + "|" + sp.prefix + "|" + sp.digits + "|" + sp.ext;
+    if (_seqCache[key] !== undefined) return _seqCache[key];
+    var n = 0;
+    try {
+        var list = new Folder(dir).getFiles(sp.prefix + "*");
+        for (var i = 0; i < list.length; i++){
+            if (list[i] instanceof Folder) continue;
+            var sp2 = seqParts(list[i].name);
+            if (sp2 && sp2.prefix === sp.prefix && sp2.ext === sp.ext && sp2.digits === sp.digits) n++;
+        }
+    } catch(e){ n = 0; }
+    _seqCache[key] = n;
+    return n;
+}
+
+function dirOf(p){
+    var s3 = String(p || "").replace(/\\/g, "/");
+    var i3 = s3.lastIndexOf("/");
+    return i3 <= 0 ? "" : s3.substring(0, i3);
+}
+
+/* 接上之后复查这一条：只写日志，不改统计（21/11 的口径一个字节不动）。 */
+function seqGuard(item, curPath, target){
+    var spT = seqParts(baseNameOf(target));
+    var spO = seqParts(baseNameOf(curPath));
+    if (!spT){
+        if (spO){
+            L("SEQ-WARN  " + item.name + "  |  " + target + "  |  原素材是图像序列帧（" + spO.prefix + spO.num + "." + spO.ext + "），接上的不是序列 —— 可能只接了一帧");
+        }
+        return;
+    }
+    var n = seqFrames(target);
+    if (n < 2) return;
+    if (!spO){
+        L("SEQ-WARN  " + item.name + "  |  " + target + "  |  接上的是图像序列首帧（同目录 " + n + " 帧），原素材不是序列 —— 请核对是否该按序列导入");
+        return;
+    }
+    if (spO.num !== spT.num){
+        L("SEQ-OFFSET " + item.name + "  |  " + target + "  |  帧号 " + spO.num + " -> " + spT.num + "（同目录 " + n + " 帧），接上后可能整条错位");
+        return;
+    }
+    L("SEQ-OK    " + item.name + "  |  " + target + "  |  图像序列 " + spT.prefix + "[" + spT.digits + "位]." + spT.ext + "（" + n + " 帧，帧号一致）");
+}
+
+""", ""),
+    # 1.1.7：replace 之后调用 seqGuard（只写日志，不改统计）
+    (r"""        seqGuard(item, curPath, target);
+        for (var al=0; al<alts.length; al++) L("  ALT       " + alts[al]);""",
+     r"""        for (var al=0; al<alts.length; al++) L("  ALT       " + alts[al]);"""),
 ]
 
 
@@ -586,6 +670,84 @@ function wantedByOnly(it){
     return false;
 }
 
+/* ===== 1.1.7 图像序列（img_0001.png 这类） =====
+
+   为什么必须单独处理：序列在 AE 里是**一个** FootageItem，但磁盘上是几百个文件。
+   接上之后有两种静默错误：
+     · replace() 只指向一帧 -> 播放只有 1 帧（画面卡住，日志却写着 RELINKED）
+     · 帧号对不上（原 img_0005 接成 img_0001）-> 整条镜头错位 4 帧
+   这两种都不抛异常，日志看着全绿。所以这里不阻止 replace（挡掉反而少接一条），
+   而是在接上之后**把话说清**：同目录有几帧、帧号有没有变。
+
+   判据只靠文件名 + 目录列举，不依赖 AE 私有属性 —— ExtendScript 没有「这是不是序列」
+   的可靠接口，硬编一个"看起来对"的判据只会骗自己。 */
+
+/* 只有这些扩展名才可能是图像序列。psd 另有专门的「分层素材」核对提示。 */
+var SEQ_EXT = { png:1, jpg:1, jpeg:1, tif:1, tiff:1, exr:1, dpx:1, tga:1, hdr:1, cin:1, sgi:1, bmp:1 };
+var _seqCache = {};
+
+/* "img_0001.png" -> { prefix:"img_", num:"0001", digits:4, ext:"png" }；不像序列返回 null。
+   prefix 为空（纯数字名 2024.png）不算：那多半是年份/编号，不是序列帧。 */
+function seqParts(name){
+    var nm = String(name || "");
+    var ext = extOf(nm);
+    if (!SEQ_EXT[ext]) return null;
+    var m = baseOf(nm).match(/^(.*?)([0-9]{2,})$/);
+    if (!m || !m[1]) return null;
+    return { prefix: m[1], num: m[2], digits: m[2].length, ext: ext };
+}
+
+/* 同目录、同前缀、同位数、同扩展名的帧数（带缓存：同一序列一次运行只数一次）。
+   阈值 >= 2 才算序列 —— 只有一个 img_0001.png 时，多半是单张图碰巧带编号。 */
+function seqFrames(path){
+    var sp = seqParts(baseNameOf(path));
+    if (!sp) return 0;
+    var dir = dirOf(path);
+    if (!dir) return 0;
+    var key = dir + "|" + sp.prefix + "|" + sp.digits + "|" + sp.ext;
+    if (_seqCache[key] !== undefined) return _seqCache[key];
+    var n = 0;
+    try {
+        var list = new Folder(dir).getFiles(sp.prefix + "*");
+        for (var i = 0; i < list.length; i++){
+            if (list[i] instanceof Folder) continue;
+            var sp2 = seqParts(list[i].name);
+            if (sp2 && sp2.prefix === sp.prefix && sp2.ext === sp.ext && sp2.digits === sp.digits) n++;
+        }
+    } catch(e){ n = 0; }
+    _seqCache[key] = n;
+    return n;
+}
+
+function dirOf(p){
+    var s3 = String(p || "").replace(/\\/g, "/");
+    var i3 = s3.lastIndexOf("/");
+    return i3 <= 0 ? "" : s3.substring(0, i3);
+}
+
+/* 接上之后复查这一条：只写日志，不改统计（21/11 的口径一个字节不动）。 */
+function seqGuard(item, curPath, target){
+    var spT = seqParts(baseNameOf(target));
+    var spO = seqParts(baseNameOf(curPath));
+    if (!spT){
+        if (spO){
+            L("SEQ-WARN  " + item.name + "  |  " + target + "  |  原素材是图像序列帧（" + spO.prefix + spO.num + "." + spO.ext + "），接上的不是序列 —— 可能只接了一帧");
+        }
+        return;
+    }
+    var n = seqFrames(target);
+    if (n < 2) return;
+    if (!spO){
+        L("SEQ-WARN  " + item.name + "  |  " + target + "  |  接上的是图像序列首帧（同目录 " + n + " 帧），原素材不是序列 —— 请核对是否该按序列导入");
+        return;
+    }
+    if (spO.num !== spT.num){
+        L("SEQ-OFFSET " + item.name + "  |  " + target + "  |  帧号 " + spO.num + " -> " + spT.num + "（同目录 " + n + " 帧），接上后可能整条错位");
+        return;
+    }
+    L("SEQ-OK    " + item.name + "  |  " + target + "  |  图像序列 " + spT.prefix + "[" + spT.digits + "位]." + spT.ext + "（" + n + " 帧，帧号一致）");
+}
+
 function relink(item){
     var src = item.mainSource;
     if (!(src instanceof FileSource)) return;
@@ -745,6 +907,7 @@ function relink(item){
         if (lext === "psd" || lext === "psb" || lext === "ai"){
             L("LAYER-WARN " + item.name + "  |  " + target + "  |  分层素材（." + lext + "）已重连，请核对图层结构是否完整");
         }
+        seqGuard(item, curPath, target);
         for (var al=0; al<alts.length; al++) L("  ALT       " + alts[al]);
     } catch (e){
         stats.missing++;

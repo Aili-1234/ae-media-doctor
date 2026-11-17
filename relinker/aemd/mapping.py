@@ -129,6 +129,46 @@ def save(table, path=None):
     return p
 
 
+def merge(base, mine, disk):
+    """三方合并：``base`` = 我打开表时看到的，``mine`` = 我现在要存的，``disk`` = 盘上现在的。
+
+    为什么需要它：界面可以开着一整天，命令行可能中间跑过一轮。两边都是
+    「读整表 → 改一条 → 写整表」，后写的会把对方的结果整表吃掉 ——
+    用户会发现「我明明指过的那条不见了」，而且没有任何提示。
+
+    规则（顺序即优先级）：
+      1. 我删掉的（base 有、mine 没有）→ 从结果里删掉。**不能因为盘上还有就复活**，
+         否则用户点「删除所选」会永远删不掉。
+      2. 我写下的（mine 里有）→ 以我为准（冲突时让刚动手的那个人赢）。
+      3. 盘上新增、我完全没碰过的 → 原样保留（这就是并发保护本身）。
+
+    返回 ``(合并后的表, {"kept": 别人的条数, "removed": 我删掉的条数, "total": 总数})``。
+    """
+    b, m, d = normalize(base), normalize(mine), normalize(disk or {})
+    out = dict(d)
+    removed = 0
+    for k in b:
+        if k not in m and k in out:
+            out.pop(k, None)
+            removed += 1
+    for k, v in m.items():
+        out[k] = v
+    kept = len([k for k in out if k not in b and k not in m])
+    return out, {"kept": kept, "removed": removed, "total": len(out)}
+
+
+def save_merged(mine, base, path=None):
+    """先合并再落盘 → ``(合并后的表, 统计)``。界面与命令行走同一条路。
+
+    特意**不改 `save()`** 的签名：`save` 是「整表覆盖」的语义，JSX / 测试 / 别处
+    都按这个语义调它。并发保护做在它上面，谁想用谁显式调这个。
+    """
+    p = path or default_path()
+    merged, st = merge(base, mine, load(p))
+    save(merged, p)
+    return merged, st
+
+
 def lookup(name, original_path=None, table=None):
     """查替身。先查原完整路径，再查原文件名；都没有返回空串。"""
     t = load() if table is None else table
