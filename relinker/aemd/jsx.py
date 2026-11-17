@@ -219,6 +219,16 @@ function pickSameParent(list, want){
 """,
      r"""        item.replace(new File(target));
 """),
+    # 1.1.5：分层 PSD/PSB/AI 重连后提示核对图层（只加一行日志，不动统计）
+    (r"""        /* 1.1.5：分层 PSD/PSB/AI 是最容易被「接上但塌层」的一类 —— replace() 之后
+           图层结构可能就没了，而用户只看到日志写着成功。AE 侧没有可靠的
+           「这张到底是不是分层导入」判据（得看 .aepx 里的导入方式），所以对这类
+           扩展名一律提示核对：宁可多一句，也不让人以为万事大吉。 */
+        var lext = extOf(target);
+        if (lext === "psd" || lext === "psb" || lext === "ai"){
+            L("LAYER-WARN " + item.name + "  |  " + target + "  |  分层素材（." + lext + "）已重连，请核对图层结构是否完整");
+        }
+""", ""),
 ]
 
 
@@ -663,6 +673,14 @@ function relink(item){
         stats.fixed++;
         relinked.push({ item: item.name, from: curPath, to: target, how: how });
         L("RELINKED  " + item.name + "  |  " + curPath + "  =>  " + target + "  [" + how + "]");
+        /* 1.1.5：分层 PSD/PSB/AI 是最容易被「接上但塌层」的一类 —— replace() 之后
+           图层结构可能就没了，而用户只看到日志写着成功。AE 侧没有可靠的
+           「这张到底是不是分层导入」判据（得看 .aepx 里的导入方式），所以对这类
+           扩展名一律提示核对：宁可多一句，也不让人以为万事大吉。 */
+        var lext = extOf(target);
+        if (lext === "psd" || lext === "psb" || lext === "ai"){
+            L("LAYER-WARN " + item.name + "  |  " + target + "  |  分层素材（." + lext + "）已重连，请核对图层结构是否完整");
+        }
         for (var al=0; al<alts.length; al++) L("  ALT       " + alts[al]);
     } catch (e){
         stats.missing++;

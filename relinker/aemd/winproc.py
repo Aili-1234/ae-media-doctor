@@ -368,10 +368,17 @@ def dialog_child_texts(hwnd, limit=8):
 
 
 def press_enter(hwnd):
-    """给窗口发一次回车（VK_RETURN 的 WM_KEYDOWN + WM_KEYUP）。
+    """给窗口按一次回车（默认焦点在「继续」上，回车 = 点它，不会误触「安全模式/重置首选项」）。
 
-    崩溃修复框的默认焦点就在「继续」上，回车等于点它 —— **不点**「以安全模式启动」
-    「重置首选项」这两个会改用户环境的按钮。实测：真机上一次回车 AE 就继续启动了。
+    1.1.4 起改成**优先真实键盘输入，其次才 PostMessage**：
+      · 崩溃修复框（「崩溃修复选项」，标题为空的 #32770）与进度框都是 AE 自绘（DroverLord），
+        按钮不是原生子控件 —— `PostMessage(WM_KEYDOWN)` 这类**伪造消息**它可能整条忽略，
+        表现就是「我们按了、框还在」（2026-11-16 真机踩过）；
+      · 真实输入只有落到**前台窗口**才安全，所以必须先 `SetForegroundWindow` 并确认
+        `GetForegroundWindow()==hwnd` 才发 —— 否则回车会打进用户正在用的窗口里，
+        那是比"卡住"严重得多的错。
+
+    返回是否发出去了（不代表对方处理了；调用方要自己复查窗口还在不在）。
     """
     try:
         u = ctypes.windll.user32
@@ -379,8 +386,34 @@ def press_enter(hwnd):
             u.SetForegroundWindow(wt.HWND(hwnd))
         except Exception:
             pass
+        time.sleep(0.05)
+        if u.GetForegroundWindow() == hwnd:
+            VK_RETURN, KEYUP = 0x0D, 0x0002
+            u.keybd_event(VK_RETURN, 0, 0, 0)
+            time.sleep(0.04)
+            u.keybd_event(VK_RETURN, 0, KEYUP, 0)
+            return True
         u.PostMessageW(wt.HWND(hwnd), 0x0100, 0x0D, 0)      # WM_KEYDOWN VK_RETURN
         u.PostMessageW(wt.HWND(hwnd), 0x0101, 0x0D, 0)      # WM_KEYUP
+        return True
+    except Exception:
+        return False
+
+
+def still_open(hwnd, timeout_ms=900):
+    """这个对话框**现在还在不在**（`SendMessageTimeout` 超时也算「在」——它只是卡着）。
+
+    为什么要能问这一句：按了回车不等于按掉了。以前每个 hwnd 只按一次、按不动就认输，
+    于是「崩溃修复选项」只要吞掉一次回车，AE 就永远停在门口。
+    """
+    try:
+        u = ctypes.windll.user32
+        if not u.IsWindow(wt.HWND(hwnd)):
+            return False
+        if not u.IsWindowVisible(wt.HWND(hwnd)):
+            return False
+        r = ctypes.c_size_t(0)
+        u.SendMessageTimeoutW(wt.HWND(hwnd), 0x0000, 0, 0, 0x0002, int(timeout_ms), ctypes.byref(r))
         return True
     except Exception:
         return False

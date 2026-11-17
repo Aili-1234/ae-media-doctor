@@ -428,6 +428,28 @@ def clear_markers():
         _remove_quiet(os.path.join(const.JSX_TARGET_DIR, name))
 
 
+#: hwnd -> 已按次数。**按一次不等于按掉了**：自绘对话框可能整条忽略伪造按键，
+#: 所以允许「还在就再按一次」，但最多两次，别变成无限敲回车。
+_PRESS_TRIES = {}
+_PRESS_MAX_PER_WINDOW = 2
+_PRESS_TRIES_CAP = 64
+
+
+def _tries(hwnd):
+    if len(_PRESS_TRIES) > _PRESS_TRIES_CAP:
+        _PRESS_TRIES.clear()
+    return _PRESS_TRIES.get(hwnd, 0)
+
+
+def _bump(hwnd):
+    _PRESS_TRIES[hwnd] = _PRESS_TRIES.get(hwnd, 0) + 1
+
+
+def _mark_done(hwnd):
+    """这个窗口已经走了 —— 记成「按到头」，以后不再碰它（别对着空气敲回车）。"""
+    _PRESS_TRIES[hwnd] = _PRESS_MAX_PER_WINDOW
+
+
 def press_startup_prompts(pid, seen=None, log=None):
     """把 AE 启动期的「崩溃修复选项」按掉 —— 返回本次按了几下。
 
@@ -444,14 +466,27 @@ def press_startup_prompts(pid, seen=None, log=None):
     if len(booked) >= const.A2_ENTER_MAX:
         return 0
     try:
-        cands = [w for w in winproc.startup_dialogs(pid) if w["hwnd"] not in booked]
+        cands = [w for w in winproc.startup_dialogs(pid) if _tries(w["hwnd"]) < _PRESS_MAX_PER_WINDOW]
     except Exception:
         return 0
     n = 0
     for w in cands[:1]:
-        booked.add(w["hwnd"])
-        if winproc.press_enter(w["hwnd"]):
-            n += 1
+        hwnd = w["hwnd"]
+        attempt = _tries(hwnd) + 1
+        _bump(hwnd)
+        booked.add(hwnd)
+        if not winproc.press_enter(hwnd):
+            continue
+        n += 1
+        # 按完立刻复查：还在就明说「下一拍再试」——1.1.4 起真实输入优先，
+        # 自绘框吞掉伪造按键这种情况才有救（2026-11-16 真机就是这么卡住的）。
+        gone = not winproc.still_open(hwnd)
+        if gone:
+            _mark_done(hwnd)
+        if not gone:
+            emit("A2      AE 弹了「崩溃修复选项」，已按「继续」但它还在（第 %d 次）——"
+                 "若下一拍仍在，请手动点一次「继续」（别点安全模式/重置首选项）" % attempt, "warn")
+        else:
             emit("A2      AE 弹了「崩溃修复选项」（上次没正常退出），已点「继续」让它继续启动",
                  "warn")
     return n
@@ -471,13 +506,16 @@ def dismiss_progress_dialogs(pid, seen=None, log=None):
     n = 0
     for w in winproc.progress_dialogs(pid, const.STARTUP_PROGRESS_TITLES):
         hwnd = w.get("hwnd")
-        if not hwnd or hwnd in seen:
+        if not hwnd or _tries(hwnd) >= _PRESS_MAX_PER_WINDOW:
             continue
         if len(seen) >= const.A2_PROGRESS_ENTER_MAX:
             break
         texts = winproc.dialog_child_texts(hwnd)
+        _bump(hwnd)
         winproc.press_enter(hwnd)
         seen.add(hwnd)
+        if not winproc.still_open(hwnd):
+            _mark_done(hwnd)
         n += 1
         if log is not None:
             extra = ("（框内文字：%s）" % " / ".join(texts)) if texts else ""
@@ -524,6 +562,8 @@ def dismiss_missing_dialogs(pid, seen=None, log=None):
             continue
         if winproc.press_enter(hwnd):
             n += 1
+            if not winproc.still_open(hwnd):
+                _mark_done(hwnd)
             extra = ("（框内文字：%s）" % " / ".join(texts)) if texts else ""
             emit("A2      AE 弹了缺素材提示框「%s」，已按回车继续（缺的素材随后照常重连）%s"
                  % (w.get("title") or "", extra), "warn")

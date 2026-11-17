@@ -267,5 +267,34 @@ class MissingFootageDialogTest(unittest.TestCase):
         self.assertEqual(pressed, [41], "第一次按、第二次因为记过 hwnd 不再按")
 
 
+    def test_K_retry_when_dialog_survives(self):
+        """K：自绘框吞掉第一次回车时，下一拍要再按一次；按掉之后不许再敲。
+
+        2026-11-16 真机：崩溃修复框与「打开项目」都是 AE 自绘（DroverLord），
+        PostMessage 的伪造按键可能整条被忽略 —— 以前每个 hwnd 只按一次，
+        吞一次就永远停在门口。现在允许重试一次，并且「走了」之后立刻收手。
+        """
+        pressed = []
+        state = {"alive": True}
+
+        orig = (winproc.startup_dialogs, winproc.press_enter, winproc.still_open)
+        winproc.startup_dialogs = lambda pid: [dlg(0x511)]
+        winproc.press_enter = lambda hwnd: (pressed.append(hwnd), True)[1]
+        winproc.still_open = lambda hwnd, timeout_ms=900: state["alive"]
+        try:
+            seen, logs = set(), []
+            n1 = aehost.press_startup_prompts(1234, seen, lambda s, tag=None: logs.append(s))
+            n2 = aehost.press_startup_prompts(1234, seen, lambda s, tag=None: logs.append(s))
+            state["alive"] = False            # 第二下之后它走了
+            n3 = aehost.press_startup_prompts(1234, seen, lambda s, tag=None: logs.append(s))
+            n4 = aehost.press_startup_prompts(1234, seen, lambda s, tag=None: logs.append(s))
+        finally:
+            winproc.startup_dialogs, winproc.press_enter, winproc.still_open = orig
+        self.assertEqual((n1, n2, n3, n4), (1, 1, 0, 0),
+                         "第一次按、还在就再按一次、之后收手；实得 %r" % ((n1, n2, n3, n4),))
+        self.assertEqual(len(pressed), 2, "总共只该按两次，实得 %r" % pressed)
+        self.assertTrue(any("还在" in s for s in logs), "要如实记一句「按了但还在」：%r" % logs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

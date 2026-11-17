@@ -26,6 +26,7 @@
 
 import datetime
 import json
+import re
 import os
 import platform
 import shutil
@@ -276,6 +277,42 @@ def collect():
     return data
 
 
+# ---------------------------------------------------------------- 脱敏（1.1.5）
+# 诊断包的用途是"发给别人看"，所以包里不该带本机的用户名、机器名与 SID。
+# 2026-11-16 实测：Windows 事件原文里有 `DESKTOP-7NDPQ5U\李` 和
+# `S-1-5-21-3380781882-...-1001`，日志里还有一堆 `C:\Users\李\...`。
+# 只做**可逆性无关**的替换（换成固定占位符），不做哈希：哈希看着专业，但排查时
+# 反而分不清"两台机器同一个人"还是"同一个人两个账户"。
+_SCRUB_RULES = (
+    (re.compile(r"S-1-5-21(?:-\d+)+"), "S-1-5-21-**"),
+    (re.compile(r"(?i)\bDESKTOP-[A-Z0-9]{4,20}\\[^\s\"'<>]+"), r"DESKTOP-****\\<user>"),
+    (re.compile(r"(?i)([A-Z]:\\Users\\)[^\\\s\"'<>]+"), r"\1<user>"),
+    (re.compile(r"(?i)(User Name:\s*)\S+"), r"\1<user>"),
+    (re.compile(r"(?i)(User:\s*)\S+"), r"\1<user>"),
+)
+
+
+def scrub(text):
+    """把一段文字里的用户名 / 机器名 / SID 换成占位符。非字符串原样返回。"""
+    if not isinstance(text, str):
+        return text
+    out = text
+    for rx, rep in _SCRUB_RULES:
+        out = rx.sub(rep, out)
+    return out
+
+
+def _scrub_obj(obj):
+    """递归脱敏 dict / list / str（collect() 出来的整棵树）。"""
+    if isinstance(obj, str):
+        return scrub(obj)
+    if isinstance(obj, dict):
+        return dict((k, _scrub_obj(v)) for k, v in obj.items())
+    if isinstance(obj, (list, tuple)):
+        return [_scrub_obj(v) for v in obj]
+    return obj
+
+
 def write_zip(dest_dir=None):
     """收集并打包，返回 zip 路径；失败返回 None（界面上报一句话，不弹异常）。"""
     try:
@@ -284,16 +321,19 @@ def write_zip(dest_dir=None):
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         zpath = os.path.join(d, "%s-diag-%s.zip" % (const.APP_NAME, stamp))
         data = collect()
+        # 1.1.5：**落盘前统一脱敏**（放在这里而不是 collect() 里，是为了让调用方拿到的
+        # 内存数据仍是原样、只有"发出去的那份"被处理 —— 界面自己看不需要被打码）
+        data = _scrub_obj(data)
         with zipfile.ZipFile(zpath, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("diagnose.json", json.dumps(data, ensure_ascii=False, indent=2))
-            summary = _summary_text(data)
+            summary = scrub(_summary_text(data))
             z.writestr("diagnose.txt", summary)
             for f in (data.get("logs") or {}).get("files") or []:
                 if isinstance(f, dict) and f.get("name"):
-                    z.writestr("logs/" + f["name"], f.get("text") or "")
+                    z.writestr("logs/" + f["name"], scrub(f.get("text") or ""))
             st = data.get("settings") or {}
             if isinstance(st, dict) and st.get("text"):
-                z.writestr("settings.json", st["text"])
+                z.writestr("settings.json", scrub(st["text"]))
         return zpath
     except Exception:
         return None
