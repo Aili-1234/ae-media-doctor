@@ -525,6 +525,7 @@ class MainWindow(object):
         self._build_block_options()     # ③
         self._build_block_buttons()     # ④
         self._build_block_kpi()         # ⑤
+        self._build_block_plugins()     # ⑤½ 插件清单（默认隐藏，跑完有结果才显示）
         self._build_block_log()         # ⑥
         # 2026-11-15 P0：**启动时一次都不许写 settings.json**。
         # 原来这里有一句 `self._persist()`：界面按默认值建好，就把默认值原样写回。
@@ -782,6 +783,56 @@ class MainWindow(object):
     def _sep(self, parent, col):
         f = tk.Frame(parent, bg=T.LINE, width=1)
         f.grid(row=0, column=col, sticky="ns")
+
+    # ⑤½ 插件区（默认隐藏；跑完有插件信息才显示：缺失数 + 完整清单）
+    def _build_block_plugins(self):
+        c = W.card(self.root)
+        self.plugin_card = c
+        # 默认不 pack —— 初始布局与之前完全一致，跑完有插件信息才在日志卡前 pack 进来，
+        # 避免空卡挤占窗口空间（也免得把依赖坐标的 UI 探针测试带崩）。
+        head = tk.Frame(c, bg=T.CARD)
+        head.pack(fill="x", padx=T.PAD_L, pady=(T.PAD_S, 0))
+        self.lb_plugin_title = tk.Label(head, text="插件", bg=T.CARD, fg=T.FG,
+                                        font=T.FONT_SUBTITLE)
+        self.lb_plugin_title.pack(side="left")
+        self.lb_plugin_count = tk.Label(head, text="", bg=T.CARD, fg=T.DIM, font=T.FONT)
+        self.lb_plugin_count.pack(side="left", padx=(T.PAD_L, 0))
+        self.plugin_body = tk.Text(c, bg=T.CARD, fg=T.FG, font=T.FONT, bd=0,
+                                   highlightthickness=0, wrap="word", height=1,
+                                   padx=T.PAD_L, pady=T.PAD_S)
+        self.plugin_body.pack(fill="x")
+        self.plugin_body.configure(state="disabled")
+        self._plugin_card_visible = False
+
+    def _show_plugins(self, missing_plugins, third_party_plugins):
+        """跑完把插件信息写进插件区。缺失 0 也**明确显示 0**（不隐藏）。
+
+        规则：
+          · 有缺失 → 标题「插件」+ 红字「缺失 N 个」+ 缺失清单
+          · 无缺失但有引用 → 标题「插件」+ 绿字「缺失 0 个」+ 已装清单
+          · 都没解析到 → 隐藏整卡
+        """
+        missing = list(missing_plugins or [])
+        tp = list(third_party_plugins or [])
+        if not missing and not tp:
+            if self._plugin_card_visible:
+                self.plugin_card.pack_forget()
+                self._plugin_card_visible = False
+            return
+        if not self._plugin_card_visible:
+            self.plugin_card.pack(fill="x", padx=20, pady=(T.PAD, 0), before=self.log_card)
+            self._plugin_card_visible = True
+        if missing:
+            self.lb_plugin_count.configure(text="缺失 %d 个" % len(missing), fg=T.BAD_C)
+            body = "缺失（AE 里没装）：\n" + "\n".join("  · %s" % n for n in missing)
+        else:
+            self.lb_plugin_count.configure(text="缺失 0 个", fg=T.OK_C)
+            body = "此工程引用的第三方插件都已安装：\n" + "\n".join("  · %s" % n for n in tp)
+        self.plugin_body.configure(state="normal")
+        self.plugin_body.delete("1.0", "end")
+        self.plugin_body.insert("1.0", body)
+        lines = body.count("\n") + 1
+        self.plugin_body.configure(height=max(1, min(lines, 10)), state="disabled")
 
     # ⑥ 日志区（标题行放「日志」+ 三颗结果类按钮）
     def _build_block_log(self):
@@ -1209,11 +1260,10 @@ class MainWindow(object):
                 self.log("WARN      %s" % w, "warn")
             for f in res.legacy_files:
                 self.log("NOTE      工程目录里还有老版本留下的文件：%s（没有自动删）" % f, "dim")
-            # 1.1.9：列出工程引用的第三方插件（不是"缺失"，是"用到了"——换机时好对照）
+            # 1.1.9：插件信息进「插件区」——缺失数（0 也显示 0）+ 完整清单
             tp = getattr(res, "third_party_plugins", None) or []
-            if tp:
-                self.log("PLUGINS   此工程引用了 %d 个第三方插件：%s"
-                         % (len(tp), "、".join(tp)), "dim")
+            missing_plugins = getattr(res, "missing_plugins", None) or []
+            self._show_plugins(missing_plugins, tp)
         mp = self.run_obj.missing_path() if self.run_obj is not None else ""
         self.btn_miss.configure(state="normal" if mp else "disabled")
         # 1.1.6：有缺件清单才让「只重试缺件」可点（没缺件时它没有意义）

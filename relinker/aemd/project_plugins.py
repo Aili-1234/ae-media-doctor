@@ -16,6 +16,7 @@
 """
 
 import os
+import re
 import struct
 
 from . import const
@@ -140,4 +141,73 @@ def default_third_party_signs():
     return signs
 
 
-__all__ = ["extract", "third_party_of", "default_third_party_signs"]
+def _norm(s):
+    """归一化插件名，让「显示名 ↔ 文件名」能对上。
+
+    例：`Deep Glow` → `deepglow`；`DeepGlow2.aex` → `deepglow`；`Optical Flares` → `opticalflares`。
+    规则：去扩展名、去空格/下划线/连字符、去尾部数字后缀、小写。
+    """
+    s = os.path.basename(str(s or "")).lower()
+    s = re.sub(r"\.(aex|plugin|bundle)$", "", s)
+    s = re.sub(r"[\s_\-]", "", s)
+    s = re.sub(r"\d+$", "", s)
+    return s
+
+
+def missing_of(project_path, installed_aex=None, third_party_signs=None):
+    """工程引用了、但当前 AE 没装的**第三方插件** → 缺失插件名列表（去重、保序）。
+
+    `installed_aex` 不传时，自动扫 AE 的全部 .aex（含 Common 共享目录）。
+
+    匹配策略（针对「中文显示名 ↔ 英文文件名」这个鸿沟，按**插件套件**判，不逐字判）：
+      · 显示名带 `BCC` 前缀 → 看 AE 有没有任何 BorisFX/BCC 文件（文件名 bcc 开头或路径含 borisfx）
+      · 显示名带 `S_` 前缀 → 看 AE 有没有任何 Sapphire 文件（路径含 sapphire）
+      · 其余 → 归一化全串匹配（Optical Flares ↔ opticalflares.aex）
+
+    诚实边界：中文显示名（「上色」「光线」）无法和英文文件名（Colorize/Rays）逐字对应，
+    所以这里判到「插件套件」粒度：`BCC 上色` 只要 AE 装了**任何** BCC 插件就算「已装」。
+    这足以回答用户真正关心的「这套插件装没装」。
+    """
+    names = third_party_of(project_path, third_party_signs=third_party_signs)
+    if not names:
+        return []
+    if installed_aex is None:
+        try:
+            from . import aehost, plugin_guard
+            installed_aex = []
+            for _name, exe in aehost.find_installs():
+                installed_aex.extend(plugin_guard.all_installed_aex(exe))
+        except Exception:
+            installed_aex = []
+    installed_norms = {_norm(x) for x in installed_aex if _norm(x)}
+    installed_paths_low = {x.lower() for x in installed_aex}
+
+    def _has_bcc():
+        return any("borisfx" in p for p in installed_paths_low) or \
+               any(n.startswith("bcc") for n in installed_norms)
+
+    def _has_sapphire():
+        return any("sapphire" in p for p in installed_paths_low)
+
+    missing = []
+    for name in names:
+        low = (name or "").lower()
+        hit = False
+        if low.startswith("bcc"):
+            hit = _has_bcc()
+        elif low.startswith("s_"):
+            hit = _has_sapphire()
+        if not hit:
+            n = _norm(name)
+            hit = n in installed_norms
+        if not hit:
+            n = _norm(name)
+            hit = any(n in ins or ins in n for ins in installed_norms
+                      if len(ins) >= 4 and len(n) >= 4)
+        if not hit:
+            missing.append(name)
+    return missing
+
+
+__all__ = ["extract", "third_party_of", "missing_of", "default_third_party_signs"]
+

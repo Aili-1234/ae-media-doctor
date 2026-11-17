@@ -112,7 +112,7 @@ class Result:
     def __init__(self, report=None, stats=None, summary="", missing=None,
                  log_writable=None, log_path="", report_path="", missing_path="",
                  elapsed=0.0, legacy_files=None, warnings=None,
-                 third_party_plugins=None):
+                 third_party_plugins=None, missing_plugins=None):
         self.report = report or {}
         self.stats = dict(stats or {})
         self.summary = summary
@@ -124,8 +124,10 @@ class Result:
         self.elapsed = elapsed
         self.legacy_files = list(legacy_files or [])
         self.warnings = list(warnings or [])
-        # 1.1.9：工程引用的第三方插件显示名（可能没装/被临时禁用，界面展示用）
+        # 1.1.9：工程引用的第三方插件显示名（界面展示用）
         self.third_party_plugins = list(third_party_plugins or [])
+        # 1.1.9：缺失插件（工程引用了但 AE 没装），缺失 0 就空列表
+        self.missing_plugins = list(missing_plugins or [])
 
 
 # 时间与睡眠做成模块级引用（测试里换掉，不必真等 90 秒）
@@ -648,22 +650,25 @@ class Run(object):
         if lw is False:
             warnings.append("过程日志没写成（目录可能只读），以报告为准")
         warnings.extend(self._collect_warns())
-        # 1.1.9：提取工程引用的第三方插件，写日志 + 塞进结果供界面展示。
+        # 1.1.9：提取工程引用的第三方插件 + 缺失插件，写日志 + 塞进结果供界面展示。
         # 让用户不用打开第二遍去比对「这个工程还依赖哪些可能缺失的插件」。
-        tp = []
+        tp, missing_plugins = [], []
         try:
             tp = project_plugins.third_party_of(self.project)
+            missing_plugins = project_plugins.missing_of(self.project)
         except Exception:
-            tp = []
-        if tp:
-            self.log("PLUGINS  此工程引用了 %d 个第三方插件：%s"
-                     % (len(tp), "、".join(tp)), "dim")
+            tp, missing_plugins = [], []
+        if missing_plugins:
+            self.log("PLUGIN-MISS 此工程引用的第三方插件缺失 %d 个（AE 里没装）：%s"
+                     % (len(missing_plugins), "、".join(missing_plugins)), "warn")
+        elif tp:
+            self.log("PLUGINS  此工程引用了 %d 个第三方插件，全部已装" % len(tp), "dim")
         self.result = Result(
             report=rep, stats=stats, summary=reports.summary_line(stats),
             missing=missing, log_writable=lw, log_path=self.log_path,
             report_path=self.report_path, missing_path=self.missing_path,
             elapsed=self.elapsed, legacy_files=self.legacy_files(), warnings=warnings,
-            third_party_plugins=tp)
+            third_party_plugins=tp, missing_plugins=missing_plugins)
         paths.clear_work()
         return self.result
 

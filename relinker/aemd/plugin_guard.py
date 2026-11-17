@@ -57,6 +57,56 @@ def plug_ins_dir(ae_exe):
         return ""
 
 
+def common_plugins_dirs():
+    r"""Adobe 共享插件目录（`Common\Plug-ins\7.0\MediaCore` 等），与 AE 版本无关。
+
+    BCC（BorisFX Continuum）、Sapphire、Trapcode、Magic Bullet 等大量插件都装在这里，
+    而不是 `Support Files\Plug-ins`。缺失判定必须扫这里，否则会把它们误判成「没装」。
+    返回存在的目录列表（可能为空）。
+    """
+    out = []
+    for adobe in const.ADOBE_DIRS:
+        common = os.path.join(adobe, "Common", "Plug-ins")
+        if not os.path.isdir(common):
+            continue
+        try:
+            for ver in os.listdir(common):
+                mc = os.path.join(common, ver, "MediaCore")
+                if os.path.isdir(mc) and mc not in out:
+                    out.append(mc)
+        except OSError:
+            continue
+    return out
+
+
+def _walk_aex(base):
+    """递归列出 `base` 下所有 `.aex` 的完整路径（确定性排序）。"""
+    out = []
+    if not base or not os.path.isdir(base):
+        return out
+    for r, _d, fs in os.walk(base):
+        for f in fs:
+            if f.lower().endswith(".aex"):
+                out.append(os.path.join(r, f))
+    out.sort(key=lambda x: x.lower())
+    return out
+
+
+def all_installed_aex(ae_exe):
+    r"""该 AE 能加载到的**全部** `.aex`（Support Files\Plug-ins + Common 共享目录）。
+
+    用于「缺失判定」——判断工程引用的插件到底装没装。跟 `_third_party_aex`（只挑
+    Support Files 里的第三方、用于禁用）是两回事：判定要全、禁用要准。
+    """
+    out = _walk_aex(plug_ins_dir(ae_exe))
+    for mc in common_plugins_dirs():
+        for p in _walk_aex(mc):
+            if p not in out:
+                out.append(p)
+    out.sort(key=lambda x: x.lower())
+    return out
+
+
 def _third_party_aex(ae_exe):
     """该 AE 版本 Plug-ins 里**第三方** `.aex` 的完整路径列表（不含官方目录里的）。
 
@@ -189,5 +239,5 @@ def recover_if_left(log=None):
     return n
 
 
-__all__ = ["disable", "restore", "recover_if_left", "plug_ins_dir",
-           "GUARD_LIST_NAME", "DISABLE_SUFFIX", "OFFICIAL_PLUGIN_DIRS"]
+__all__ = ["disable", "restore", "recover_if_left", "plug_ins_dir", "common_plugins_dirs",
+           "all_installed_aex", "GUARD_LIST_NAME", "DISABLE_SUFFIX", "OFFICIAL_PLUGIN_DIRS"]

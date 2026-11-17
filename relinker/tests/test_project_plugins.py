@@ -94,6 +94,33 @@ def _():
              "第三方漏判：%s" % tp)
 
 
+@check("F. missing_of：工程引用了但 AE 没装的才判缺失，缺失 0 返回空列表")
+def _():
+    """核心：显示名 ↔ 文件名 归一化匹配。BCC/S_ 没装 -> 缺失；Bokeh/DeepGlow/Optical 装了 -> 不缺失。"""
+    p = _mk_aep(["BCC Brightness-Contrast", "S_Rays", "Bokeh", "Deep Glow",
+                 "Optical Flares", "Shine"])
+    installed = [r"C:\AE\Plug-ins\Bokeh.aex",
+                 r"C:\AE\Plug-ins\DeepGlow2.aex",
+                 r"C:\AE\Plug-ins\OpticalFlares.aex"]
+    got = project_plugins.missing_of(p, installed_aex=installed,
+                                     third_party_signs={"bcc", "sapphire", "bokeh",
+                                                        "deepglow", "opticalflares", "shine"})
+    need("BCC Brightness-Contrast" in got, "BCC 应判缺失")
+    need("S_Rays" in got, "S_ 应判缺失")
+    need("Shine" in got, "Shine 应判缺失")
+    for present in ("Bokeh", "Deep Glow", "Optical Flares"):
+        need(present not in got, "%s 已装却被判缺失" % present)
+
+
+@check("G. missing_of：全部已装时返回空列表（缺失 0）")
+def _():
+    p = _mk_aep(["Bokeh", "Optical Flares"])
+    installed = [r"C:\AE\Plug-ins\Bokeh.aex", r"C:\AE\Plug-ins\OpticalFlares.aex"]
+    got = project_plugins.missing_of(p, installed_aex=installed,
+                                     third_party_signs={"bokeh", "opticalflares"})
+    need(got == [], "全部已装应返回空列表，实得 %r" % got)
+
+
 def main():
     print("拾链 —— 工程插件解析（tests/test_project_plugins.py）")
     print("-" * 66)
