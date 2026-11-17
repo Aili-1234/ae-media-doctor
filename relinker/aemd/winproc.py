@@ -45,7 +45,8 @@ import ctypes
 import time
 from ctypes import wintypes as wt
 
-from .const import AE_EXE, NO_WINDOW
+from .const import (AE_EXE, NO_WINDOW, POLL_TIGHT_S, POLL_SLICE_S, POLL_SHORT_S,
+                    POLL_MED_S, POLL_LONG_S, POLL_LOOP_S)
 
 _PROCESS_SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -512,11 +513,11 @@ def press_enter(hwnd):
             u.SetForegroundWindow(wt.HWND(hwnd))
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(POLL_TIGHT_S)
         if u.GetForegroundWindow() == hwnd:
             VK_RETURN, KEYUP = 0x0D, 0x0002
             u.keybd_event(VK_RETURN, 0, 0, 0)
-            time.sleep(0.04)
+            time.sleep(POLL_SLICE_S)
             u.keybd_event(VK_RETURN, 0, KEYUP, 0)
             return True
         u.PostMessageW(wt.HWND(hwnd), 0x0100, 0x0D, 0)      # WM_KEYDOWN VK_RETURN
@@ -539,10 +540,10 @@ def press_escape(hwnd):
             u.SetForegroundWindow(wt.HWND(hwnd))
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(POLL_TIGHT_S)
         if u.GetForegroundWindow() == hwnd:
             u.keybd_event(0x1B, 0, 0, 0)          # VK_ESCAPE down
-            time.sleep(0.04)
+            time.sleep(POLL_SLICE_S)
             u.keybd_event(0x1B, 0, 0x0002, 0)     # up
             return True
         u.PostMessageW(wt.HWND(hwnd), 0x0100, 0x1B, 0)
@@ -579,7 +580,7 @@ def click_continue(hwnd):
             u.SetForegroundWindow(wt.HWND(hwnd))
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(POLL_TIGHT_S)
         if u.GetForegroundWindow() != hwnd:
             return False          # 前台不是这个框（用户在用别的窗口）—— 绝不抢鼠标
 
@@ -594,11 +595,11 @@ def click_continue(hwnd):
         for x, y in ((r.left + w // 2, r.top + 9),
                      (r.left + int(w * CONTINUE_BTN_XY[0]), r.top + int(h * CONTINUE_BTN_XY[1]))):
             u.SetCursorPos(int(x), int(y))
-            time.sleep(0.15)
+            time.sleep(POLL_MED_S)
             u.mouse_event(0x0002, 0, 0, 0, 0)      # LEFTDOWN
-            time.sleep(0.08)
+            time.sleep(POLL_SHORT_S)
             u.mouse_event(0x0004, 0, 0, 0, 0)      # LEFTUP
-            time.sleep(0.2)
+            time.sleep(POLL_LONG_S)
         u.SetCursorPos(pt.x, pt.y)
         return True
     except Exception:
@@ -692,7 +693,7 @@ def terminate_tree(pid, force=False, wait=0.0):
     if force:
         args.append("/F")
     try:
-        subprocess.run(args, capture_output=True, creationflags=NO_WINDOW)
+        subprocess.run(args, capture_output=True, creationflags=NO_WINDOW, timeout=20)
     except Exception:
         return False
     if not wait:
@@ -701,7 +702,7 @@ def terminate_tree(pid, force=False, wait=0.0):
     while time.time() - t0 < wait:
         if not is_alive(pid):
             return True
-        time.sleep(0.25)
+        time.sleep(POLL_LOOP_S)
     return not is_alive(pid)
 
 

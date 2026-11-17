@@ -1,4 +1,4 @@
-﻿# P4 打包脚本（onedir）—— 一条命令出包，然后自己验收前四项
+# P4 打包脚本（onedir）—— 一条命令出包，然后自己验收前四项
 # 用法：powershell -NoProfile -File packaging\build.ps1
 # 说明：
 #   · 必须用 uv 的 3.12（系统 3.13 没 tkinter，打出来是废包）
@@ -18,7 +18,7 @@ $ICO  = Join-Path $ROOT "..\assets\shilian.ico"
 $ICO_OLD = "C:\插件\自己的插件和辅助工具\AE素材医生-源码与维修报告\assets\doctor.ico"
 $ENG  = "C:\Users\李\AppData\Roaming\AE素材医生\engine\Everything"
 $DIST = Join-Path $ROOT ("dist\" + $NAME)
-$OUT  = "C:\插件\自己的插件和辅助工具\素材修复2"
+$OUT  = "C:\插件\自己的插件和辅助工具\拾链"
 
 Set-Location $ROOT
 $env:PYTHONIOENCODING = "utf-8"

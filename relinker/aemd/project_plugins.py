@@ -43,6 +43,12 @@ def _is_third_party(name, third_party_signs):
     return False
 
 
+#: 1.1.10：`.aep` 最多只读这么多个字节再找 sspcfnam。
+#: 插件名全在工程前半段（真机 again.aep 4.7 MB，命中点都在 1 MB 内），
+#: 整文件读会把 100 MB 级工程整个搬进内存 —— 那是一次白给的峰值。
+MAX_SCAN_BYTES = 32 * 1024 * 1024
+
+
 def extract(project_path):
     """从 .aep 提取引用的效果插件显示名 → 去重有序列表（按首次出现顺序）。
 
@@ -54,7 +60,7 @@ def extract(project_path):
         return []
     try:
         with open(path, "rb") as fh:
-            data = fh.read()
+            data = fh.read(MAX_SCAN_BYTES)
     except OSError:
         return []
     if not data:

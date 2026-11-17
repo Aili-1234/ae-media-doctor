@@ -8,5 +8,5 @@
 """
 
 APP_NAME = "拾链"
-APP_VER = "1.1.9"
+APP_VER = "1.1.10"
 APP_EN_NAME = "Relinker"        # 英文副名：只出现在说明.txt 与 About 里

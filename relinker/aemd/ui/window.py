@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """aemd.ui.window —— 主窗口（单屏密度，六块）。
 
 布局（§5：900×820 不出横向滚动）：
@@ -790,31 +790,41 @@ class MainWindow(object):
         f.grid(row=0, column=col, sticky="ns")
 
     # ⑤½ 插件栏（放在日志卡**右侧**的窄栏：插件名横向需求小，不单独占一行）
-    def _build_block_plugins(self, wrap):
-        # 插件栏是日志卡 wrap 右侧的一个子卡片，默认不 pack（跑完有内容才 pack 到日志右侧）。
-        c = W.card(wrap)
+    def _build_block_plugins(self):
+        """插件卡：**独立整宽卡片**，插在日志卡上方（默认不 pack，有内容才出现）。
+
+        1.1.10 之前它是日志卡右侧的窄栏 —— 只有 22 字符宽，点开界面得先把日志卡
+        拉大才看得全。现在整宽、行数自适应，一眼看完。
+        """
+        c = W.card(self.root)
         self.plugin_card = c
         head = tk.Frame(c, bg=T.CARD)
-        head.pack(fill="x", padx=T.PAD_S, pady=(T.PAD_S, 0))
+        head.pack(fill="x", padx=T.PAD_L, pady=(T.PAD_S, 0))
         self.lb_plugin_title = tk.Label(head, text="插件", bg=T.CARD, fg=T.FG,
                                         font=T.FONT_SUBTITLE)
         self.lb_plugin_title.pack(side="left")
         self.lb_plugin_count = tk.Label(head, text="", bg=T.CARD, fg=T.DIM, font=T.FONT)
         self.lb_plugin_count.pack(side="left", padx=(T.PAD_S, 0))
-        self.plugin_body = tk.Text(c, bg=T.CARD, fg=T.FG, font=T.FONT, bd=0,
-                                   highlightthickness=0, wrap="word", width=22,
-                                   padx=T.PAD_S, pady=T.PAD_S)
-        self.plugin_body.pack(fill="both", expand=True)
+        W.Tip(self.lb_plugin_title,
+              "这里列的是工程里用到的第三方效果插件（.aex）。\n"
+              "「缺失」= 工程引用了、但这台机器上没装 —— 缺的效果 AE 会代之以占位，\n"
+              "修素材前最好先装上，否则打开工程会提示缺少效果。")
+        body_wrap = tk.Frame(c, bg=T.CARD)
+        body_wrap.pack(fill="x", padx=1, pady=(T.PAD_S, 1))
+        self.plugin_body = tk.Text(body_wrap, bg=T.CARD, fg=T.FG, font=T.FONT, bd=0,
+                                   highlightthickness=0, wrap="word",
+                                   padx=T.PAD_L, pady=T.PAD_S, height=3)
+        self.plugin_body.pack(side="left", fill="x", expand=True)
         self.plugin_body.configure(state="disabled")
         self._plugin_card_visible = False
 
     def _show_plugins(self, missing_plugins, third_party_plugins):
-        """跑完把插件信息写进日志右侧的插件栏。缺失 0 也**明确显示 0**（不隐藏）。
+        """跑完把插件信息写进插件卡。缺失 0 也**明确显示 0**（不隐藏）。
 
         规则：
           · 有缺失 → 「缺失 N 个」（红）+ 缺失清单
           · 无缺失但有引用 → 「缺失 0 个」（绿）+ 已装清单
-          · 都没解析到 → 隐藏插件栏
+          · 都没解析到 → 不显示这张卡
         """
         missing = list(missing_plugins or [])
         tp = list(third_party_plugins or [])
@@ -823,19 +833,31 @@ class MainWindow(object):
                 self.plugin_card.pack_forget()
                 self._plugin_card_visible = False
             return
-        if not self._plugin_card_visible:
-            self.plugin_card.pack(side="right", fill="y", padx=(T.PAD_S, 0))
-            self._plugin_card_visible = True
+
         if missing:
             self.lb_plugin_count.configure(text="缺失 %d 个" % len(missing), fg=T.BAD_C)
-            body = "缺失（AE 没装）：\n" + "\n".join("· %s" % n for n in missing)
+            lines = [("缺失 %d 个（这台机器没装）：%s" % (len(missing), "、".join(missing)),
+                      "miss")]
+            if tp:
+                lines.append(("已装 %d 个：%s" % (len(tp), "、".join(tp)), "dim"))
         else:
             self.lb_plugin_count.configure(text="缺失 0 个", fg=T.OK_C)
-            body = "已装：\n" + "\n".join("· %s" % n for n in tp)
-        self.plugin_body.configure(state="normal")
-        self.plugin_body.delete("1.0", "end")
-        self.plugin_body.insert("1.0", body)
-        self.plugin_body.configure(state="disabled")
+            lines = [("缺失 0 个（都装了）—— 工程用到 %d 个第三方插件：%s"
+                      % (len(tp), "、".join(tp)), "ok")]
+
+        body = self.plugin_body
+        body.configure(state="normal")
+        body.delete("1.0", "end")
+        for text, tag in lines:
+            body.insert("end", text + "\n", tag)
+        body.configure(state="disabled")
+        # 行数自适应：3~10 行，多了也不撑爆窗口（里面还能滚动看）
+        body.configure(height=max(1, min(3, len(lines))))
+
+        if not self._plugin_card_visible:
+            self.plugin_card.pack(fill="x", padx=20, pady=(T.PAD, 0),
+                                  before=self.log_card)
+            self._plugin_card_visible = True
 
     # ⑥ 日志区（标题行放「日志」+ 三颗结果类按钮；右侧是插件栏）
     def _build_block_log(self):
@@ -867,16 +889,19 @@ class MainWindow(object):
         wrap.pack(fill="both", expand=True, padx=1, pady=(T.PAD_S, 1))
         self.txt = tk.Text(wrap, bg=T.LOG_BG, fg=T.LOG_FG, insertbackground=T.FG,
                            font=T.MONO, borderwidth=0, highlightthickness=0, wrap="none",
-                           padx=12, pady=10, height=8)
+                           padx=12, pady=10, height=7)
         self.txt.pack(side="left", fill="both", expand=True)
         sb = W.SlimScroll(wrap, self.txt, track=T.LOG_BG, thumb=T.BTN, bg=T.LOG_BG)
         sb.pack(side="left", fill="y")
         self.sb_log = sb
-        self._build_block_plugins(wrap)   # 插件栏：日志右侧窄栏（默认隐藏）
+        self._build_block_plugins()   # 插件卡：独立整宽，插在本卡上方（默认隐藏）
         self.txt.configure(state="disabled")
         for tag, color in (("ok", T.OK_C), ("bad", T.BAD_C), ("warn", T.WARN_C),
                            ("dim", T.DIM), ("head", "#b79cff")):
             self.txt.tag_configure(tag, foreground=color)
+        for tag, color in (("ok", T.OK_C), ("bad", T.BAD_C), ("miss", T.BAD_C),
+                           ("dim", T.DIM)):
+            self.plugin_body.tag_configure(tag, foreground=color)
         self._log_empty = True
         self.txt.configure(state="normal")
         self.txt.insert("end", const.LOG_EMPTY_HINT, "dim")

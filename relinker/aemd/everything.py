@@ -266,7 +266,7 @@ def ensure_ready(log=None, wait_client_s=12, wait_admin_s=20):
         if log:
             log("INDEX     启动自带 Everything，等待索引…")
         for _ in range(max(0, int(wait_client_s))):
-            time.sleep(1)
+            time.sleep(const.POLL_SECOND_S)
             state = index_state(es)
             if state.is_ok():
                 return state
@@ -281,7 +281,7 @@ def ensure_ready(log=None, wait_client_s=12, wait_admin_s=20):
         except Exception:
             pass
         for _ in range(max(0, int(wait_admin_s))):
-            time.sleep(1)
+            time.sleep(const.POLL_SECOND_S)
             state = index_state(es)
             if state.is_ok():
                 if log:

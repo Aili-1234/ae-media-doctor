@@ -43,6 +43,19 @@ GUARD_LIST_NAME = "plugin_guard.json"
 #: 禁用后缀
 DISABLE_SUFFIX = ".off"
 
+#: 1.1.10：**永不禁用**的 `.aex`（按文件名小写比对）。
+#: 理由（用户 2026-11-17 结论）：FX Console 这类「脚本面板宿主」不是效果插件，
+#: 它只负责把 ScriptUI 面板画出来；禁用后效果插件能恢复，面板却要重启 AE 才回来。
+#: 而脚本面板本身不会在打开工程时弹窗卡死（实测卡死的是 Optical Flares 这类效果插件），
+#: 所以从一开始就把它排除在禁用名单外，比修完提示「请重启 AE」体验更好。
+#: `.jsx` / `.jsxbin` 脚本本工具**从来不碰**（只改名 `.aex`），这里只管面板宿主的 `.aex`。
+SCRIPT_PANEL_KEEP = frozenset(("fxconsole.aex",))
+
+
+def is_kept_aex(path):
+    """该 `.aex` 是否属于「脚本面板宿主、永不禁用」。"""
+    return os.path.basename(str(path)).lower() in SCRIPT_PANEL_KEEP
+
 
 def _guard_list_path():
     return os.path.join(const.APP_HOME, GUARD_LIST_NAME)
@@ -79,17 +92,38 @@ def common_plugins_dirs():
     return out
 
 
+#: 1.1.10：一次运行里 disable / restore / finish / 缺失判定会反复扫同一棵
+#: Plug-ins 树（1,581 个文件、两层目录），每次都 os.walk 一遍纯属浪费。
+#: 这些树在「一次修复」的生命周期内不会变（变的是文件后缀，不是文件集合），
+#: 所以在进程内缓存扫描结果，disable()/restore() 开头各清一次即可。
+_AEX_SCAN_CACHE = {}
+
+
+def clear_scan_cache():
+    """清掉扫描缓存（disable/restore 的开头会调，保证读到当下真实状态）。"""
+    _AEX_SCAN_CACHE.clear()
+
+
+def _scan_under(base, suffix):
+    """递归列出 base 下所有以 suffix 结尾的文件（带缓存）。"""
+    key = (base, suffix)
+    hit = _AEX_SCAN_CACHE.get(key)
+    if hit is not None:
+        return list(hit)
+    out = []
+    if base and os.path.isdir(base):
+        for r, _d, fs in os.walk(base):
+            for f in fs:
+                if f.lower().endswith(suffix):
+                    out.append(os.path.join(r, f))
+    out.sort(key=lambda x: x.lower())
+    _AEX_SCAN_CACHE[key] = list(out)
+    return out
+
+
 def _walk_aex(base):
     """递归列出 `base` 下所有 `.aex` 的完整路径（确定性排序）。"""
-    out = []
-    if not base or not os.path.isdir(base):
-        return out
-    for r, _d, fs in os.walk(base):
-        for f in fs:
-            if f.lower().endswith(".aex"):
-                out.append(os.path.join(r, f))
-    out.sort(key=lambda x: x.lower())
-    return out
+    return _scan_under(base, ".aex")
 
 
 def all_installed_aex(ae_exe):
@@ -126,10 +160,7 @@ def _third_party_aex(ae_exe):
         if os.path.isfile(p) and name.lower().endswith(".aex"):
             out.append(p)
         elif os.path.isdir(p) and name.lower() not in OFFICIAL_PLUGIN_DIRS:
-            for r, _d, fs in os.walk(p):
-                for f in fs:
-                    if f.lower().endswith(".aex"):
-                        out.append(os.path.join(r, f))
+            out.extend(_scan_under(p, ".aex"))
     out.sort(key=lambda x: x.lower())
     return out
 
@@ -170,6 +201,21 @@ def _clear_guard_list():
         pass
 
 
+def _kept_off_files(base):
+    """`base` 下**面板宿主**遗留的 `.aex.off`（旧版本禁过、需要自愈的那些）。"""
+    out = []
+    if not base or not os.path.isdir(base):
+        return out
+    try:
+        for f in _scan_under(base, DISABLE_SUFFIX):
+            if is_kept_aex(os.path.basename(f)[: -len(DISABLE_SUFFIX)]):
+                out.append(f)
+    except OSError:
+        return out
+    out.sort(key=lambda x: x.lower())
+    return out
+
+
 def disable(ae_exe, log=None):
     """禁用该 AE 版本的所有第三方插件 → 返回被禁用的 `.off` 路径列表。
 
@@ -177,10 +223,24 @@ def disable(ae_exe, log=None):
     任何单个改名失败都不抛 —— 跳过并记日志，保证「能禁多少禁多少」，剩下的
     交给 run 层的 plugin_block 点名。
     """
+    clear_scan_cache()
     emit = log or (lambda s, tag=None: None)
+    # 先自愈：旧版本禁过的面板宿主（1.1.9 及以前会把 FXConsole.aex 变 .off），
+    # 现在策略是「从一开始就不禁用」，所以遇到遗留状态就直接改回来。
+    for off in _kept_off_files(plug_ins_dir(ae_exe)):
+        back = off[: -len(DISABLE_SUFFIX)]
+        try:
+            os.rename(off, back)
+            emit("PLUGIN   恢复脚本面板宿主：%s" % os.path.basename(back), "dim")
+        except OSError as e:
+            emit("PLUGIN   脚本面板宿主恢复失败：%s（%s）" % (os.path.basename(off), e), "warn")
     aexs = _third_party_aex(ae_exe)
     offs = []
+    kept = 0
     for p in aexs:
+        if is_kept_aex(p):
+            kept += 1
+            continue
         off = p + DISABLE_SUFFIX
         if os.path.isfile(off):
             offs.append(off)          # 已经是 .off（上一轮没恢复），直接记
@@ -193,6 +253,10 @@ def disable(ae_exe, log=None):
     if offs:
         _write_guard_list(offs)
         emit("PLUGIN   已临时禁用 %d 个第三方插件（修复完会恢复）" % len(offs), "dim")
+    if kept:
+        emit("PLUGIN   保留 %d 个脚本面板宿主未禁用（%s），面板不用重启 AE"
+             % (kept, "、".join(sorted(SCRIPT_PANEL_KEEP))), "dim")
+    emit("SCRIPT   .jsx / .jsxbin 脚本一律不改名（本工具只动 .aex）", "dim")
     return offs
 
 
@@ -202,6 +266,7 @@ def restore(log=None):
     恢复是**幂等且尽力**的：每个 `.off` 都尝试改回，单个失败跳过；全部处理完才删清单。
     就算清单里某个文件已经不在（用户自己删了），也不影响其它恢复。
     """
+    clear_scan_cache()
     emit = log or (lambda s, tag=None: None)
     offs = _read_guard_list()
     n = 0
@@ -240,4 +305,5 @@ def recover_if_left(log=None):
 
 
 __all__ = ["disable", "restore", "recover_if_left", "plug_ins_dir", "common_plugins_dirs",
-           "all_installed_aex", "GUARD_LIST_NAME", "DISABLE_SUFFIX", "OFFICIAL_PLUGIN_DIRS"]
+           "all_installed_aex", "is_kept_aex", "GUARD_LIST_NAME", "DISABLE_SUFFIX",
+           "OFFICIAL_PLUGIN_DIRS", "SCRIPT_PANEL_KEEP"]

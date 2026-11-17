@@ -486,7 +486,7 @@ def press_startup_prompts(pid, seen=None, log=None):
         # 2026-11-17 用户指正：日志写着"已按「继续」"，其实框还在、最后是人手点的。
         if not gone and attempt == 1:
             if winproc.click_continue(hwnd):
-                time.sleep(0.6)
+                time.sleep(const.POLL_STEP_S)
                 gone = not winproc.still_open(hwnd)
                 emit("A2      「崩溃修复选项」回车按不动，改用鼠标点「继续」——%s"
                      % ("过了" if gone else "还是不行"), "dim" if gone else "warn")
