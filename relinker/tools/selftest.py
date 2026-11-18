@@ -770,6 +770,58 @@ def _():
     need(n == 11, "缺件夹具应当 11 条，实得 %d" % n)
 
 
+@check("内部 API 引用都在（调用了却没定义的私有函数 = 提交前就该红）")
+def _():
+    # 第 38 项。来历：1.1.34/1.1.35 连着两次「runner 调 winproc._visible_windows / _class_name，
+    # 而这两个函数压根没写」——py_compile 与其余 37 项全绿，只有真弹框那一刻才 NameError 崩在现场。
+    # 做法：只看**跨模块调用**（a.b(...)），把 b 与目标模块的顶层定义/导入/赋值对照。
+    import ast
+    pkg = os.path.join(ROOT, "aemd")
+    mods = {}
+    for root, _d, files in os.walk(pkg):
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            fp = os.path.join(root, fn)
+            with open(fp, encoding="utf-8-sig") as fh:      # 有 BOM 的文件也能 parse
+                src = fh.read()
+            tree = ast.parse(src)
+            top = set()
+            for n in tree.body:
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    top.add(n.name)
+                elif isinstance(n, ast.Assign):
+                    for tg in n.targets:
+                        if isinstance(tg, ast.Name):
+                            top.add(tg.id)
+                elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for a in n.names:
+                        top.add(a.asname or a.name.split(".")[0])
+            rel = os.path.relpath(fp, pkg)[:-3].replace(os.sep, ".")
+            mods["aemd" if rel == "aemd.__init__" else ("aemd." + rel if not rel.startswith("aemd") else rel)] = (tree, top)
+    bad = []
+    for key, (tree, _top) in mods.items():
+        alias = {}
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ImportFrom) and n.level:
+                for a in n.names:
+                    if not a.name.startswith("_"):
+                        alias[a.asname or a.name] = a.name
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            f = n.func
+            if not (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)):
+                continue
+            tgt = alias.get(f.value.id)
+            if not tgt:
+                continue
+            full = "aemd." + tgt
+            if full in mods and f.attr not in mods[full][1]:
+                bad.append("%s → %s.%s" % (key, tgt, f.attr))
+    need(not bad, "这些跨模块调用指向了不存在的名字：%s" % ", ".join(sorted(set(bad))[:8]))
+
+
 def main():
     print("%s %s —— 自检（不启动界面、不碰 AE）" % (aemd.APP_NAME, aemd.APP_VER))
     print("项目根：%s" % ROOT)

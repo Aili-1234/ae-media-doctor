@@ -928,7 +928,11 @@ class Run(object):
         if not self.opt.close_own_ae:
             return
         if pid:
-            aehost.close_own_ae(pid, "跑完关闭", self.log, save=self.opt.save_before_close)
+            ok = aehost.close_own_ae(pid, "跑完关闭", self.log, save=self.opt.save_before_close)
+            # 1.1.39：close_own_ae 的 emit 只进界面，不进日志文件 —— 于是「跑完了但没关」
+            # 在文件里只剩一行 CHK，看不到结局。这里把结局也落进文件，事后能一眼判读。
+            _chk(("已关掉 AE PID %s（先存再关）" % pid) if ok else
+                 ("没关掉 AE PID %s —— AE 还开着（看上面 DLG-CLOSE / CLOSE-NO）" % pid))
 
     def _snapshot(self):
         return Poll(self.state, self.elapsed, [], report=self.report,
