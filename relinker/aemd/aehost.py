@@ -905,7 +905,7 @@ def _is_saveas(title):
 
 
 
-def _save_then_close(pid, wait=8.0, log=None):
+def _save_then_close(pid, wait=None, log=None):
     """先 Ctrl+S 存盘，再 WM_CLOSE；关闭途中若弹「是否保存」→ 按回车选「保存」。
 
     返回 (是否已退出, 是否是靠保存提示过的)。
@@ -914,23 +914,46 @@ def _save_then_close(pid, wait=8.0, log=None):
     真机（2026-11-18，cb.aep）就是因为这个框把关闭卡住、最后只能强杀。
     """
     emit = log or (lambda s, tag=None: None)
+    if wait is None:
+        wait = float(getattr(const, "CLOSE_WAIT_S", 5.0))
     saved = False
     prompts = 0
     # 1.1.17（真机 moonligt v2）：**不主动按 Ctrl+S**。
     # 工程若还没落盘（AE 刚转换完的新工程），Ctrl+S 会弹 Windows「另存为」框，
     # 那个框必须人来给文件名，自动点只会把 AE 挂在那里 —— 上一次就是这么卡住的。
     # 我们的脚本自己已经 SAVED 过副本，所以「关闭时遇到是否保存 → 选保存」足够。
-    try:
-        w = winproc.main_window(pid)
+    # 1.1.40（真机 2026-11-18 14:44 那轮）：原来「拿不到主窗口」就 terminate 然后
+    # 直接 return —— 结果 terminate 没杀掉时**一条日志都不留**，日志里只剩 runner 打的
+    # 一句「没关掉」。现在：先重找 2 秒，仍找不到就对任意可见窗口发关闭，然后照常走
+    # 对话框 → 强制结束，每条出口都留证据。
+    w = None
+    t_find = time.time()
+    while time.time() - t_find < 1.0 and not w:
+        try:
+            w = winproc.main_window(pid)
+        except Exception:
+            w = None
         if not w:
-            # 拿不到主窗口（无界面 / 打桩环境）→ 退回原来的 taskkill 路径，行为与旧版一致
-            return winproc.terminate_tree(pid, wait=wait), False
-        winproc.post_close(w.get("hwnd"))
-    except Exception:
-        return winproc.terminate_tree(pid, wait=wait), False
+            time.sleep(0.2)
+    try:
+        if w:
+            winproc.post_close(w.get("hwnd"))
+        else:
+            sent = False
+            for _h, _t in winproc._visible_windows(pid):
+                if winproc.post_close(_h):
+                    emit("CLOSE-ALT 没找到 AE 主窗口，已对可见窗口发关闭（标题=%r）" % (_t,), "dim")
+                    sent = True
+                    break
+            if not sent:
+                emit("CLOSE-ALT 没找到 AE 主窗口，也没有可发关闭的可见窗口", "warn")
+    except Exception as e:
+        emit("CLOSE-ERR 发关闭消息失败：%s" % e, "warn")
     t0 = time.time()
+    _t_post = t0   # 1.1.44：从「发出关闭消息」到「进程真的消失」实际花了多久
     while time.time() - t0 < wait:
         if not winproc.is_alive(pid):
+            emit("CLOSE-T  发出关闭→进程消失 %.2f 秒（对话框按了 %d 次）" % (time.time() - _t_post, prompts), "dim")
             return True, prompts > 0
         # 1.1.37：这里原来只看「标题为空」的框，而真机上挡路的是**有标题**的
         # 「保存项目」（A2 日志原话：「有个不认识的框挡在前面：「保存项目」」）→ 永远抓不到，
@@ -955,7 +978,10 @@ def _save_then_close(pid, wait=8.0, log=None):
             if not clicked:
                 clicked = winproc.press_enter(h)
             if not clicked or winproc.still_open(h):
-                clicked = winproc.click_dialog_default(h)      # 自绘框只有真鼠标点得动
+                # 1.1.41：关闭阶段默认**不动鼠标**（工程已由脚本存过，关不掉就强杀自己的 PID），
+                # 只有显式打开 const.CLOSE_MOUSE_CLICK 时才去点 —— 避免抢占用户的鼠标。
+                if const.CLOSE_MOUSE_CLICK:
+                    clicked = winproc.click_dialog_default(h)
             if clicked:
                 prompts += 1
                 time.sleep(0.5)
@@ -968,8 +994,20 @@ def _save_then_close(pid, wait=8.0, log=None):
         emit("CLOSE-NO  想关 AE 但没关成（等了 %.0f 秒，对话框按了 %d 次）——AE 还开着，我留了证据" % (wait, prompts), "warn")
         # 1.1.38（用户定）：勾了「跑完关掉本程序启动的 AE」的人本来就接受保存/丢改动，
         # 那就必须真的关掉 —— 对话框按不动就收掉我们**自己拉起的那个 PID**（别人的 AE 一律不碰）。
-        if winproc.terminate_tree(pid, wait=3.0):
+        # 1.1.43（用户反馈「关了，但停留了 15 秒」）：整条关闭路径原来最多要
+        # 2s 找窗 + 5s 等 + 3s terminate + 3s kill ≈ 13s。现在收成
+        # 1s 找窗 + 2.5s 等；并且**没出现过对话框**时不再先试 terminate（那是又一次
+        # WM_CLOSE + 等待），直接硬杀自己拉起的 PID —— 工程脚本已存过盘，丢的只是未保存的临时改动。
+        if prompts == 0:
+            if winproc.kill_tree(pid, wait=1.5):
+                emit("CLOSE-FORCE 没有对话框，等 %.1f 秒 AE 还没退，已结束本次拉起的 AE PID %s" % (wait, pid), "warn")
+                return True, False
+        if winproc.terminate_tree(pid, wait=1.5):
             emit("CLOSE-FORCE 对话框按了 %d 次还没退，已强制结束本次拉起的 AE PID %s" % (prompts, pid), "warn")
+            return True, prompts > 0
+        # 1.1.40：优雅 terminate 都按不动（AE 卡在自绘框里时会这样）→ 硬杀自己的 PID
+        if winproc.kill_tree(pid, wait=1.5):
+            emit("CLOSE-FORCE 对话框按了 %d 次、terminate 也没退，已强杀本次拉起的 AE PID %s" % (prompts, pid), "warn")
             return True, prompts > 0
         emit("CLOSE-FAIL  AE PID %s 强制结束也没退（极少见，请手动关掉）" % pid, "bad")
         return False, prompts > 0

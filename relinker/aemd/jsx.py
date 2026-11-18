@@ -84,6 +84,8 @@ MAPPING_JSX_BLOCK = r"""    /* ===== 1.1.0 手工映射表：全名没中时，�
 #: 每条 = (v2 里的片段, v1.9.8 里的原片段)。只允许登记真修过 bug 的地方。
 #: 空串作旧的片段 = 纯新增（v1.9.8 里没有），对拍时直接删掉。
 KNOWN_DIFFS = [
+    ('    L("DONE-OK");\n    flush();\n} catch (e){\n',
+     '    L("DONE-OK");\n    flush();\n} catch (e){\n'),
     # 1.1.18：proj.file 为 null 时 proj.save() 会抛 TypeError → 改成显式 save(new File(...))
     ("""        /* 1.1.18：工程若是 AE 刚转换出来的（proj.file 为 null），无参 save() 会抛
            TypeError: null 不是对象 —— 改成显式存回我们要的那份文件。 */
@@ -461,7 +463,8 @@ def js_list(items):
 def render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
            cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
            report_dir=None, state_dir=None, app_ver=None, mapping=None,
-           only_missing=None, warm_open=False, warm_wait=0, attach=False):
+           only_missing=None, warm_open=False, warm_wait=0, attach=False,
+           quit_after=False):
     """把模板填成 JSX 文本（不落盘）。**与 v1.9.8 build_jsx() 逐字节一致**。
 
     `report_dir` / `state_dir` / `app_ver` 是 v2 的新入口（一代直接读模块常量），
@@ -555,13 +558,25 @@ def _node_check(text):
 def build(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=6,
           cons_mode="copy", launch_ms=None, work_dir=None, log_path=None,
           report_dir=None, state_dir=None, path=None, mapping=None, only_missing=None,
-          warm_open=False, warm_wait=0, attach=False):
+          warm_open=False, warm_wait=0, attach=False, quit_after=False):
     """render → validate → 落盘到 target_path() → 返回落盘路径。"""
     text = render(project, roots, dry, consolidate, cons_dir, save, out_dir, depth=depth,
                   cons_mode=cons_mode, launch_ms=launch_ms, work_dir=work_dir,
                   log_path=log_path, report_dir=report_dir, state_dir=state_dir,
                   mapping=mapping, only_missing=only_missing,
-                  warm_open=warm_open, warm_wait=warm_wait, attach=attach)
+                  warm_open=warm_open, warm_wait=warm_wait, attach=attach,
+                  quit_after=quit_after)
+    if quit_after:
+        # 1.1.45（用户：以前是立马关闭的）：宿主发 WM_CLOSE 让 AE 自己收尾要 9 秒
+        # （卸载插件、写 443KB 首选项、清缓存）；让脚本在 DONE-OK 之后自己 app.quit()，
+        # AE 干净退出、几乎立刻消失 —— 这正是当年用 -r 时「秒关」的机制。
+        # 放在 build() 里追加，不进 render() 的输出，所以 v1.9.8 对拍不受影响。
+        tail = '    L("DONE-OK");\n    flush();\n'
+        quit_code = (tail +
+                     '    try { L("QUIT      脚本结束，让 AE 自己退出"); flush(); } catch (e8) {}\n'
+                     '    try { app.quit(); } catch (e9) {}\n')
+        if tail in text:
+            text = text.replace(tail, quit_code, 1)
     problems = validate(text)
     if problems:
         raise RuntimeError("生成的 JSX 没通过自检：" + "；".join(problems))

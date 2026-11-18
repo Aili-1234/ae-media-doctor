@@ -299,7 +299,7 @@ class Run(object):
                 work_dir=const.WORK_DIR, log_path=self.log_path,
                 state_dir=self.state_dir, launch_ms=0, mapping=table, only_missing=only,
                 warm_open=self.warm, warm_wait=const.WARM_OPEN_WAIT_S if self.warm else 0,
-                attach=self.attach)
+                attach=self.attach, quit_after=bool(self.opt.close_own_ae))
         except (OSError, RuntimeError) as e:
             raise ScriptGenError("生成脚本失败：%s" % e)
         self.log("SCRIPT 脚本已生成 %s" % self.jsx_path, "dim")
@@ -926,6 +926,10 @@ class Run(object):
         _chk("CHK 勾了关 AE=%s / 本次拉起的 PID=%s"
              % (bool(getattr(self.opt, "close_own_ae", None)), pid))
         if not self.opt.close_own_ae:
+            _chk("未勾选「跑完关掉本程序启动的 AE」，AE 会留着不关")
+            return
+        if not pid:
+            _chk("勾了要关，但没记到本次拉起的 PID —— 无法确认该关哪一个，AE 不关")
             return
         if pid:
             ok = aehost.close_own_ae(pid, "跑完关闭", self.log, save=self.opt.save_before_close)

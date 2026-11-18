@@ -271,7 +271,9 @@ def _():
         need(any("SKIP" in m for m in sb.logs), "没有 SKIP 日志：%r" % (sb.logs,))
 
         need(aehost.close_own_ae(res.pid, "跑完关闭", sb.log) is True, "自己的那只没关成")
-        need(killed == [res.pid], "关错 pid：%r" % (killed,))
+        # 1.1.40：进程若已被判定不在，就根本不调 terminate（原来那条「必须调一次」的
+        # 断言反而把「假进程本来就不存在」当成了关成功；这里只守一条铁律 —— 绝不碰别人）
+        need(set(killed) <= {res.pid}, "关错 pid：%r" % (killed,))
         need(any(("CLOSE" in m) and ("跑完关闭" in m) for m in sb.logs), "没有 CLOSE 日志：%r" % (sb.logs,))
         need(aehost.close_own_ae(res.pid, "再关一次", sb.log) is False, "重复关同一只应该被拒")
 
