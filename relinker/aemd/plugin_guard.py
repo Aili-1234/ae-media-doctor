@@ -129,6 +129,11 @@ def _walk_aex(base):
 def all_installed_aex(ae_exe):
     r"""该 AE 能加载到的**全部** `.aex`（Support Files\Plug-ins + Common 共享目录）。
 
+    1.1.12：同时算上 `.aex.off`。`.off` 只可能是**我们自己**临时禁用的（护栏改名），
+    文件本身还在机器上 —— 把它当成「没装」会在界面上对用户撒谎（实测反馈：
+    「我明明装了 Bokeh 和 Optical Flares，卡片却说这台机器没装」）。
+    这也是唯一一类会让缺失判定说谎的自造来源，必须在判定层堵住。
+
     用于「缺失判定」——判断工程引用的插件到底装没装。跟 `_third_party_aex`（只挑
     Support Files 里的第三方、用于禁用）是两回事：判定要全、禁用要准。
     """
@@ -137,6 +142,12 @@ def all_installed_aex(ae_exe):
         for p in _walk_aex(mc):
             if p not in out:
                 out.append(p)
+    # 护栏临时禁用的那些：文件在，只是名字后面多了 .off
+    for base in [plug_ins_dir(ae_exe)] + common_plugins_dirs():
+        for p in _scan_under(base, ".aex.off"):
+            q = p[:-4]                      # 去掉 ".off"，还原成 .aex 路径
+            if q not in out:
+                out.append(q)
     out.sort(key=lambda x: x.lower())
     return out
 

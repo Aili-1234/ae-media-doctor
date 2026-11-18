@@ -162,7 +162,7 @@ class Ctx(object):
         # 打桩测试里没有真 AE，直接把它钉成 False。
         self.patch(runner.Run, "_cold_start", lambda self: False)
         self.patch(aehost, "close_own_ae",
-                   lambda pid, reason, log=None, wait=8: self.closed.append((pid, reason)) or True)
+                   lambda pid, reason, log=None, wait=8, force=False, save=True: self.closed.append((pid, reason)) or True)
         return self
 
     def __exit__(self, *exc):

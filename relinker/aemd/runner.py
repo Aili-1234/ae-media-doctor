@@ -57,7 +57,7 @@ class Options:
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
                  mapping_path="", only_missing=False, warm_open=False, attach=False,
-                 close_existing=False):
+                 close_existing=False, save_before_close=True):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -81,6 +81,9 @@ class Options:
         self.attach = bool(attach)
         # 1.1.9 检测到已有 AE 时：勾了「自动关掉再跑」就自动关掉它继续，否则 BLOCKED 等用户手关
         self.close_existing = bool(close_existing)
+        # 1.1.17：关 AE 之前先按一次 Ctrl+S（并在「是否保存」框上选「保存」）。
+        # 默认开：强杀 AE 会丢用户未保存的改动，先存一次是零成本的保险。
+        self.save_before_close = bool(save_before_close)
 
 
 class CopyProjectError(RuntimeError):
@@ -423,6 +426,13 @@ class Run(object):
             # 1.1.7：不认识的框（如「设置窗口」）只会把 open 卡死，Esc 掉并报出标题
             aehost.dismiss_unknown_dialogs(pid, self._prompt_seen, self.log)
             aehost.dismiss_progress_dialogs(pid, self._prompt_seen, self.log)
+            # 1.1.14：主窗口已经在跑时又冒出来的空标题框 = 运行期警告
+            # （典型「上次保存此项目之后，N 个文件丢失」），按回车确认放行
+            # 1.1.33：这里原来要求「主窗已出现」才处理对话框 —— 而「解析字体」恰恰是在主窗出来
+            # **之前**弹的，于是永远轮不到处理，整轮就卡死在那一个框上（真机实测卡 150 秒）。
+            # 现在无条件处理：dismiss_warning_dialogs 自己会放过「崩溃修复选项」与「另存为」。
+            if pid:
+                aehost.dismiss_warning_dialogs(pid, self._prompt_seen, self.log)
 
         started = bool(self.log_path) and os.path.exists(self.log_path)
         if not started:
@@ -544,7 +554,24 @@ class Run(object):
         except Exception:
             return False
 
+    @staticmethod
+    def _fatal_first(lines):
+        """日志里第一行 FATAL（AE 内脚本抛错）—— 有就直接返回，别傻等到 10 分钟超时。
+
+        2026-11-18 真机（moonligt v2.aep）：JSX 在 `proj.file.fsName` 上抛
+        `FATAL TypeError: null 不是对象 line 484`，脚本早就死了，可宿主管线还要等
+        SCRIPT_WAIT_S 才报超时，用户看到的就是"卡住不动"。
+        """
+        for ln in (lines or []):
+            s = str(ln).strip()
+            if s.startswith("FATAL"):
+                return s
+        return ""
+
     def _poll_running(self, lines, started):
+        bad = self._fatal_first(lines)
+        if bad:
+            return self._fail("AE 里脚本报错了：%s" % bad, lines, partial=True)
         self.state = State.RUNNING
         el = self.elapsed
         # 1.1.9 热启动：脚本就位了，轮到我们把工程交给 AE（只交一次）
@@ -838,6 +865,8 @@ class Run(object):
         if res.legacy_files:
             self.log("NOTE    工程目录还有 %d 个旧版文件：%s（没删，可手动清）"
                      % (len(res.legacy_files), "、".join(res.legacy_files)), "dim")
+        # 1.1.25（用户定：让脚本自己在结尾存一次）：保存改由 JSX 结尾的 CFG.save 分支负责，
+        # 这里不再发键盘 Ctrl+S —— Windows 前台锁让它在命令行下必然失败。
         self._maybe_close_own_ae()
         self._cleanup_startup()
         return Poll(State.DONE, self.elapsed, lines, report=self.report,
@@ -881,11 +910,25 @@ class Run(object):
 
     def _maybe_close_own_ae(self):
         """唯一会自动关 AE 的地方：用户勾了「跑完关掉这次打开的 AE」且确实是自己拉起的。"""
+        pid = self.launch.pid if self.launch else None
+
+        def _chk(msg):
+            # GUI 里 Python 侧日志只进界面、不进日志文件，所以这里额外落一行到文件，
+            # 「勾了却没关」才有据可查（1.1.27）。
+            self.log(msg, "dim")
+            try:
+                import io as _io, time as _t
+                with _io.open(self.log_path, "a", encoding="utf-8") as _f:
+                    _f.write("%-9s %s\n" % ("CLOSE", msg))
+            except Exception:
+                pass
+
+        _chk("CHK 勾了关 AE=%s / 本次拉起的 PID=%s"
+             % (bool(getattr(self.opt, "close_own_ae", None)), pid))
         if not self.opt.close_own_ae:
             return
-        pid = self.launch.pid if self.launch else None
         if pid:
-            aehost.close_own_ae(pid, "跑完关闭", self.log)
+            aehost.close_own_ae(pid, "跑完关闭", self.log, save=self.opt.save_before_close)
 
     def _snapshot(self):
         return Poll(self.state, self.elapsed, [], report=self.report,
@@ -1133,6 +1176,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
         `collect` 是给批量用的：每个工程跑完把自己的结果写回那一行，
         免得为了汇总再去解析 stdout。
         """
+        # 1.1.25：CLI 出口也不再补存 —— 保存由脚本结尾自己做（CFG.save），与前台焦点无关。
         _flush_py_log()
         if collect is not None:
             if error:

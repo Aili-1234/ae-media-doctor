@@ -121,6 +121,73 @@ def _():
     need(got == [], "全部已装应返回空列表，实得 %r" % got)
 
 
+@check("护栏临时禁用的 .aex.off 不算「没装」（1.1.12）")
+def _():
+    # 来历：用户实测截图反馈「我明明装了 Bokeh 和 Optical Flares，卡片却说这台机器没装」。
+    # 真相是护栏把第三方 .aex 改名成 .aex.off（文件还在），缺失判定只认 .aex 就误报。
+    from aemd import project_plugins as pp
+    need(pp._norm("Bokeh.aex.off") == "bokeh", "带 .off 的归一化不对：%s" % pp._norm("Bokeh.aex.off"))
+    need(pp._norm("OpticalFlares.aex.off") == "opticalflares", ".off 归一化不对")
+    real_tp = pp.third_party_of
+    try:
+        pp.third_party_of = lambda *a, **k: ["Bokeh", "Optical Flares"]
+        got = pp.missing_of("x.aep", installed_aex=[
+            r"C:\p\Bokeh.aex.off", r"C:\p\OpticalFlares.aex.off"])
+        need(got == [], "只有 .off 时不该算缺失，实得 %r" % (got,))
+        got2 = pp.missing_of("x.aep", installed_aex=[r"C:\p\Bokeh.aex"])
+        need(got2 == ["Optical Flares"], "真缺一个时应当只报那一个，实得 %r" % (got2,))
+    finally:
+        pp.third_party_of = real_tp
+
+
+@check("别名：Element 3D ↔ Element.aex（1.1.12）")
+def _():
+    from aemd import project_plugins as pp
+    real = pp.third_party_of
+    try:
+        pp.third_party_of = lambda *a, **k: ["Element 3D"]
+        got = pp.missing_of("x.aep", installed_aex=[r"C:\p\Element.aex"])
+        need(got == [], "装了 Element.aex 却报缺失 %r" % (got,))
+        rows = pp.resolution("x.aep", installed_aex=[r"C:\p\Element.aex"])
+        need(rows and rows[0]["ok"] and rows[0]["how"] in ("exact", "token-exact"),
+             "判定依据不对：%r" % (rows,))
+    finally:
+        pp.third_party_of = real
+
+
+@check("分词：Trapcode Particular ↔ Particular.aex（1.1.12）")
+def _():
+    from aemd import project_plugins as pp
+    real = pp.third_party_of
+    try:
+        pp.third_party_of = lambda *a, **k: ["Trapcode Particular", "Trapcode Form"]
+        rows = pp.resolution("x.aep", installed_aex=[r"C:\p\Particular.aex"])
+        by = dict((r["name"], r) for r in rows)
+        need(by["Trapcode Particular"]["ok"], "Particular 没对上")
+        need(not by["Trapcode Form"]["ok"], "Form 本来就没装，不该判成已装")
+    finally:
+        pp.third_party_of = real
+
+
+@check("resolution 每条都给「凭什么」；真缺的 how=no-match（1.1.12）")
+def _():
+    from aemd import project_plugins as pp
+    real = pp.third_party_of
+    try:
+        pp.third_party_of = lambda *a, **k: ["Bokeh", "S_Glint", "BCC Glow"]
+        rows = pp.resolution("x.aep", installed_aex=[])
+        hows = dict((r["name"], r["how"]) for r in rows)
+        need(all(not r["ok"] for r in rows), "空机不该有已装")
+        need(hows["Bokeh"] == "no-match", "Bokeh 依据不对：%s" % hows["Bokeh"])
+        need(hows["S_Glint"] == "no-match", "S_Glint 依据不对：%s" % hows["S_Glint"])
+        rows2 = pp.resolution("x.aep", installed_aex=[
+            r"C:\Program Files\Adobe\Common\Plug-ins\7.0\MediaCore\Sapphire Plug-ins\S_Glint.aex"])
+        need(rows2[1]["ok"] and rows2[1]["how"].startswith("suite:sapphire"),
+             "S_ 该走套件判定：%r" % (rows2[1],))
+    finally:
+        pp.third_party_of = real
+
+
 def main():
     print("拾链 —— 工程插件解析（tests/test_project_plugins.py）")
     print("-" * 66)

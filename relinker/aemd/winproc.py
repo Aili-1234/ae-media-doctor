@@ -529,7 +529,7 @@ def dialog_child_texts(hwnd, limit=8):
     return out[:limit]
 
 
-def press_ok(hwnd):
+def press_ok(hwnd, texts=None):
     """点对话框的「确定 / OK」——比按回车稳。
 
     为什么加：真机上「缺少 N 个效果」这个框（标题 `After Effects`、类 `#32770`）
@@ -539,7 +539,8 @@ def press_ok(hwnd):
     if not hwnd:
         return False
     u = ctypes.windll.user32
-    WANT = ("确定", "ok", "OK", "是", "继续", "close", "关闭")
+    # 1.1.26：把「保存」也算进来（关闭时 AE 问「是否保存」的默认按钮就是它）
+    WANT = tuple(texts) if texts else ("确定", "ok", "OK", "是", "继续", "close", "关闭", "保存", "save", "Save")
     found = []
 
     def _cb(child, _lp):
@@ -613,10 +614,7 @@ def press_enter(hwnd):
     """
     try:
         u = ctypes.windll.user32
-        try:
-            u.SetForegroundWindow(wt.HWND(hwnd))
-        except Exception:
-            pass
+        force_foreground(hwnd, tries=2)      # 1.1.31：后台进程直接 SetForegroundWindow 会被拒
         time.sleep(POLL_TIGHT_S)
         if u.GetForegroundWindow() == hwnd:
             VK_RETURN, KEYUP = 0x0D, 0x0002
@@ -729,67 +727,6 @@ def still_open(hwnd, timeout_ms=900):
         return False
 
 
-def force_foreground(hwnd, tries=3, wait=0.25):
-    """把窗口硬拽到前台（`SetForegroundWindow` 常被 Windows 静默拒绝）。
-
-    做法：`AttachThreadInput` 把自己挂到当前前台线程的输入队列上再抢，抢完立刻摘下
-    —— 这是自动化里通用的一招。抢不到就老实返回 False，绝不假装成功。
-    """
-    if not hwnd:
-        return False
-    u = ctypes.windll.user32
-    k = ctypes.windll.kernel32
-    try:
-        u.ShowWindow(hwnd, 9)                      # SW_RESTORE
-    except Exception:
-        pass
-    for _ in range(max(1, tries)):
-        try:
-            if u.GetForegroundWindow() == hwnd:
-                return True
-            fg = u.GetForegroundWindow()
-            tid_fg = u.GetWindowThreadProcessId(fg, None)
-            tid_me = k.GetCurrentThreadId()
-            attached = False
-            if tid_fg and tid_fg != tid_me:
-                attached = bool(u.AttachThreadInput(tid_me, tid_fg, True))
-            u.BringWindowToTop(hwnd)
-            u.SetForegroundWindow(hwnd)
-            u.SetActiveWindow(hwnd)
-            if attached:
-                u.AttachThreadInput(tid_me, tid_fg, False)
-            if u.GetForegroundWindow() == hwnd:
-                return True
-        except Exception:
-            pass
-        time.sleep(wait)
-    return False
-
-
-def send_ctrl_s(hwnd):
-    """给窗口发一次真实的 Ctrl+S（先抢前台；抢不到就返回 False，绝不乱按键）。
-
-    关 AE 之前先存一次：AE 有未保存改动时，WM_CLOSE 会弹「是否保存」，
-    那个框是自绘的、拿不到按钮句柄；先存好，关闭时就不会问。
-    """
-    if not hwnd:
-        return False
-    try:
-        if not force_foreground(hwnd):
-            return False
-        VK_CONTROL, VK_S = 0x11, 0x53
-        KEYEVENTF_KEYUP = 0x0002
-        keybd_event(VK_CONTROL, 0, 0, 0)
-        time.sleep(0.05)
-        keybd_event(VK_S, 0, 0, 0)
-        time.sleep(0.05)
-        keybd_event(VK_S, 0, KEYEVENTF_KEYUP, 0)
-        time.sleep(0.05)
-        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
-        return True
-    except Exception:
-        return False
-
 
 def post_close(hwnd):
     """给窗口发 WM_CLOSE（不杀进程、不抢焦点）。风险面比 taskkill 小得多。"""
@@ -878,8 +815,143 @@ def kill_tree(pid, wait=4.0):
 
 
 __all__ = ["snapshot_pids", "is_alive", "last_error", "visible_pids", "has_main_window",
-           "windows_of", "modal_dialogs", "error_dialogs", "is_error_dialog",
+           "windows_of", "_visible_windows", "_class_name", "all_dialogs", "click_dialog_default", "modal_dialogs", "error_dialogs", "is_error_dialog",
            "ERROR_DIALOG_KEYWORDS", "post_close", "close_modal_dialogs",
            "startup_dialogs", "progress_dialogs", "dialog_child_texts", "press_enter",
            "ae_procs", "ae_pids", "foreign_ae_pids", "terminate_tree", "kill_tree",
            "PROCESSENTRY32W"]
+
+def _class_name(hwnd):
+    """窗口类名（`#32770` = Win32 对话框）。1.1.35 补：all_dialogs 依赖它，
+    前几版只写了调用没写实现 —— 只要没有可见对话框就不会被调用，所以命令行一直没炸，
+    直到真机上出现一个对话框才 NameError。"""
+    try:
+        buf = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(wt.HWND(hwnd), buf, 256)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def _visible_windows(pid):
+    """该进程所有可见的顶层窗口 -> [(hwnd, title), ...]（1.1.34 补：all_dialogs 依赖它，
+    前几版只写了调用忘了写实现，打桩测试一碰到就走 NameError）。"""
+    out = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    def _cb(hwnd, _lp):
+        try:
+            if not ctypes.windll.user32.IsWindowVisible(hwnd):
+                return True
+            owner = wt.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value != pid:
+                return True
+            n = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(n + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, n + 1)
+            out.append((hwnd, buf.value))
+        except Exception:
+            pass
+        return True
+
+    try:
+        ctypes.windll.user32.EnumWindows(_cb, 0)
+    except Exception:
+        pass
+    return out
+
+
+def all_dialogs(pid):
+    """列出该进程所有可见的对话框窗口（类名 #32770）。
+
+    和 warning_dialogs() 的区别：这里**不做任何标题/内容过滤**，
+    只负责「看见什么就报什么」，交给调用方决定点不点。
+    返回 [(hwnd, title, kids), ...]，kids 是子控件的文字列表。
+    """
+    out = []
+    for hwnd, title in _visible_windows(pid):
+        if _class_name(hwnd) != "#32770":
+            continue
+        out.append((hwnd, title, dialog_child_texts(hwnd)))
+    return out
+
+
+def force_foreground(hwnd, tries=3, wait=None):
+    """把窗口真正抢到前台（SetForegroundWindow 从后台进程发会被静默拒绝）。
+
+    办法：AttachThreadInput 把当前线程挂到「前台窗口所属线程」上，此时本进程在系统眼里
+    就是前台线程的一部分，SetForegroundWindow 才会生效；抢完立刻摘下，不留副作用。
+    返回是否成功（以 GetForegroundWindow()==hwnd 为准）。
+    """
+    if wait is None:
+        wait = POLL_SHORT_S
+    u = ctypes.windll.user32
+    k32 = ctypes.windll.kernel32
+    me = k32.GetCurrentThreadId()
+    for _ in range(max(1, tries)):
+        try:
+            if u.GetForegroundWindow() == hwnd:
+                return True
+            fg = u.GetForegroundWindow()
+            tid_fg = u.GetWindowThreadProcessId(fg, None) if fg else 0
+            attached = False
+            if tid_fg and tid_fg != me:
+                attached = bool(u.AttachThreadInput(me, tid_fg, True))
+            try:
+                u.ShowWindow(wt.HWND(hwnd), 9)          # SW_RESTORE
+                u.BringWindowToTop(wt.HWND(hwnd))
+                u.SetForegroundWindow(wt.HWND(hwnd))
+                u.SetActiveWindow(wt.HWND(hwnd))
+            finally:
+                if attached:
+                    u.AttachThreadInput(me, tid_fg, False)
+        except Exception:
+            pass
+        time.sleep(wait)
+        try:
+            if u.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def click_dialog_default(hwnd, tries=3):
+    """用**真实鼠标**点对话框右下角的默认按钮（「确定」）。
+
+    为什么必须这样：AE 的对话框是自绘（DroverLord），「确定」不是原生子控件 ——
+    BM_CLICK 没有目标可发、回车又可能因为抢不到前台而落空。真实鼠标事件是唯一
+    对自绘框也一定生效的办法（点在屏幕坐标上，谁在最上面就点谁）。1.1.36 真机取证：
+    对话框 (555..1120)x(310..650)，「确定」中心约在 (1035, 580)，即右下角内缩
+    约 8% 宽 / 11% 高。
+    """
+    u = ctypes.windll.user32
+    if not hwnd:
+        return False
+    for i in range(max(1, tries)):
+        try:
+            r = wt.RECT()
+            u.GetWindowRect(wt.HWND(hwnd), ctypes.byref(r))
+            w, h = r.right - r.left, r.bottom - r.top
+            if w <= 0 or h <= 0:
+                return False
+            # 第一下打测得的默认按钮位，不好使就顺时针挪几个点再试
+            offs = [(0.86, 0.86), (0.80, 0.86), (0.92, 0.86), (0.86, 0.93)]
+            fx, fy = offs[min(i, len(offs) - 1)]
+            x, y = r.left + int(w * fx), r.top + int(h * fy)
+            old = wt.POINT()
+            u.GetCursorPos(ctypes.byref(old))
+            u.SetCursorPos(x, y)
+            time.sleep(POLL_SLICE_S)
+            u.mouse_event(0x0002, 0, 0, 0, 0)      # LEFTDOWN
+            time.sleep(POLL_SLICE_S)
+            u.mouse_event(0x0004, 0, 0, 0, 0)      # LEFTUP
+            time.sleep(POLL_MED_S)
+            u.SetCursorPos(old.x, old.y)
+            if not still_open(hwnd):
+                return True
+        except Exception:
+            pass
+        time.sleep(POLL_SHORT_S)
+    return False

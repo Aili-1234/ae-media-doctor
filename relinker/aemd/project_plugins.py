@@ -154,25 +154,99 @@ def _norm(s):
     规则：去扩展名、去空格/下划线/连字符、去尾部数字后缀、小写。
     """
     s = os.path.basename(str(s or "")).lower()
+    s = re.sub(r"\.off$", "", s)              # 护栏临时禁用：X.aex.off 仍算装了
     s = re.sub(r"\.(aex|plugin|bundle)$", "", s)
     s = re.sub(r"[\s_\-]", "", s)
     s = re.sub(r"\d+$", "", s)
     return s
 
 
-def missing_of(project_path, installed_aex=None, third_party_signs=None):
-    """工程引用了、但当前 AE 没装的**第三方插件** → 缺失插件名列表（去重、保序）。
+#: 显示名 ↔ 文件名 的已知别名（1.1.12）。值一律是「归一化后的目标名」。
+#: 只收真机上真见过的对应关系；宁可少收，不要瞎猜（猜错就是把装了说成没装）。
+ALIASES = {
+    "element": "element3d",
+    "element3d": "element3d",
+    "video copilot": "",
+    "videocopilot": "",
+    "trapcode": "",
+    "red giant": "",
+    "maxon": "",
+    "boris fx": "",
+    "borisfx": "",
+    "continuum": "",
+}
 
-    `installed_aex` 不传时，自动扫 AE 的全部 .aex（含 Common 共享目录）。
 
-    匹配策略（针对「中文显示名 ↔ 英文文件名」这个鸿沟，按**插件套件**判，不逐字判）：
-      · 显示名带 `BCC` 前缀 → 看 AE 有没有任何 BorisFX/BCC 文件（文件名 bcc 开头或路径含 borisfx）
-      · 显示名带 `S_` 前缀 → 看 AE 有没有任何 Sapphire 文件（路径含 sapphire）
-      · 其余 → 归一化全串匹配（Optical Flares ↔ opticalflares.aex）
+def _tokens(s):
+    """把显示名拆成可比较的词：`Trapcode Particular` → [`trapcode`, `particular`]。
 
-    诚实边界：中文显示名（「上色」「光线」）无法和英文文件名（Colorize/Rays）逐字对应，
-    所以这里判到「插件套件」粒度：`BCC 上色` 只要 AE 装了**任何** BCC 插件就算「已装」。
-    这足以回答用户真正关心的「这套插件装没装」。
+    同时按空格/下划线/连字符和 CamelCase 拆（`OpticalFlares` → optical / flares 之外
+    也保留整串），丢掉长度 < 3 的碎片（`S_`、`2D` 这种没法当判据）。
+    """
+    raw = str(s or "")
+    raw = re.sub(r"\.(aex|off|plugin|bundle)$", "", raw, flags=re.I)
+    parts = re.split(r"[\s_\-]+", raw)
+    out = []
+    for part in parts:
+        for piece in re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z0-9]+", part):
+            piece = piece.lower()
+            if len(piece) >= 3 and piece not in out:
+                out.append(piece)
+    whole = _norm(raw)
+    if whole and whole not in out:
+        out.append(whole)
+    return out
+
+
+def _strip_prefix(norm_name):
+    """去掉品牌前缀（`trapcodeparticular` → `particular`），用别名表里的空值当线索。"""
+    for pre in ("videocopilot", "trapcode", "redgiant", "maxon", "borisfx",
+                "continuum", "borisfxcontinuum", "sapphire"):
+        if norm_name.startswith(pre) and len(norm_name) > len(pre) + 3:
+            return norm_name[len(pre):]
+    return norm_name
+
+
+def _match_one(name, installed_norms, installed_paths_low):
+    """单个显示名 → (命中文件或 None, 判定依据)。按「由严到宽」逐级试。"""
+    low = (name or "").lower()
+    # ① 套件级：BCC → BorisFX 任一文件；S_ → Sapphire 任一文件
+    if low.startswith("bcc"):
+        if any("borisfx" in p for p in installed_paths_low):
+            return "<borisfx 套件>", "suite:borisfx"
+        if any(n.startswith("bcc") for n in installed_norms):
+            return "<bcc 文件>", "suite:bcc"
+    if low.startswith("s_"):
+        if any("sapphire" in p for p in installed_paths_low):
+            return "<sapphire 套件>", "suite:sapphire"
+    # ② 精确（归一化后全等）
+    n = _norm(name)
+    alias = ALIASES.get(low.strip()) or ALIASES.get(n)
+    for cand in [n, alias, _strip_prefix(n)]:
+        if cand and cand in installed_norms:
+            return installed_norms[cand], "exact"
+    # ③ 分词包含：显示名的词全在某个已装名里（或反向），要求长词 ≥4 才作数
+    toks = [t for t in _tokens(name) if len(t) >= 4]
+    if toks:
+        for ins_norm, path in installed_norms.items():
+            if all(t in ins_norm for t in toks):
+                return path, "tokens"
+        # ④ 单个长词命中（`Trapcode Particular` ↔ `particular.aex`）
+        for t in sorted(toks, key=len, reverse=True):
+            if t in installed_norms:
+                return installed_norms[t], "token-exact"
+    # ⑤ 双向子串（旧逻辑，兜底）
+    for ins_norm, path in installed_norms.items():
+        if len(ins_norm) >= 4 and len(n) >= 4 and (n in ins_norm or ins_norm in n):
+            return path, "substr"
+    return None, "no-match"
+
+
+def resolution(project_path, installed_aex=None, third_party_signs=None):
+    """工程里引用的第三方插件 → 每个都给出「装没装、对上哪个文件、凭什么」。
+
+    返回 `[{"name": 显示名, "ok": bool, "file": 文件路径或 <套件>, "how": 依据}]`。
+    这是 `missing_of()` 的底层实现：判定过程可解释，出问题时能说清为什么。
     """
     names = third_party_of(project_path, third_party_signs=third_party_signs)
     if not names:
@@ -185,35 +259,37 @@ def missing_of(project_path, installed_aex=None, third_party_signs=None):
                 installed_aex.extend(plugin_guard.all_installed_aex(exe))
         except Exception:
             installed_aex = []
-    installed_norms = {_norm(x) for x in installed_aex if _norm(x)}
-    installed_paths_low = {x.lower() for x in installed_aex}
-
-    def _has_bcc():
-        return any("borisfx" in p for p in installed_paths_low) or \
-               any(n.startswith("bcc") for n in installed_norms)
-
-    def _has_sapphire():
-        return any("sapphire" in p for p in installed_paths_low)
-
-    missing = []
+    installed_norms = {}
+    installed_paths_low = set()
+    for x in installed_aex:
+        if not x:
+            continue
+        installed_paths_low.add(str(x).lower())
+        k = _norm(x)
+        if k and k not in installed_norms:
+            installed_norms[k] = x
+        # 反向别名：装了 Element.aex 也应当接住工程里的「Element 3D」
+        alias = ALIASES.get(k)
+        if alias and alias not in installed_norms:
+            installed_norms[alias] = x
+    out = []
     for name in names:
-        low = (name or "").lower()
-        hit = False
-        if low.startswith("bcc"):
-            hit = _has_bcc()
-        elif low.startswith("s_"):
-            hit = _has_sapphire()
-        if not hit:
-            n = _norm(name)
-            hit = n in installed_norms
-        if not hit:
-            n = _norm(name)
-            hit = any(n in ins or ins in n for ins in installed_norms
-                      if len(ins) >= 4 and len(n) >= 4)
-        if not hit:
-            missing.append(name)
-    return missing
+        hit, how = _match_one(name, installed_norms, installed_paths_low)
+        out.append({"name": name, "ok": hit is not None, "file": hit or "", "how": how})
+    return out
 
 
-__all__ = ["extract", "third_party_of", "missing_of", "default_third_party_signs"]
+def missing_of(project_path, installed_aex=None, third_party_signs=None):
+    """工程引用了、但当前 AE 没装的**第三方插件** → 缺失插件名列表（去重、保序）。
+
+    实现见 `resolution()`：先按插件套件（BCC / Sapphire）判，再精确名、再分词包含、
+    最后双向子串。1.1.12 起 `.aex.off`（护栏自己临时改的名）也算「装了」。
+    """
+    return [r["name"] for r in resolution(
+        project_path, installed_aex=installed_aex,
+        third_party_signs=third_party_signs) if not r["ok"]]
+
+
+__all__ = ["extract", "third_party_of", "missing_of", "resolution",
+           "default_third_party_signs", "ALIASES"]
 

@@ -724,25 +724,17 @@ class MainWindow(object):
         W.Tip(self.cb_cons, "不收进：只重连，文件留在原地。\n"
                             "复制：Footages 里多一份（安全，占空间）。\n"
                             "移进：复制后确认大小一致，再删原文件（省空间，不能撤销）。")
-        t_close = W.Toggle(right, "跑完关掉本程序启动的 AE", self.auto_close)
+        # 1.1.29（用户定）：关 AE 与「关前存一次」合并成一项 —— 它们本来就是一件事的两步，
+        # 分开摆只会让人问「这俩有关联吧」。勾上 = 跑完由本程序关掉 AE，并在它问「是否保存」时选保存。
+        t_close = W.Toggle(right, "跑完关掉本程序启动的 AE（先存再关）", self.auto_close)
         t_close.grid(row=0, column=0, sticky="w")
         t_close_existing = W.Toggle(right, "检测到 AE 在跑时，自动关掉再跑", self.var_close_existing)
         t_close_existing.grid(row=1, column=0, sticky="w")
         # 1.1.23（用户要两列各三项、对称为止）：自动保存是独立能力，跟关不关 AE 无关，
         # 排在右列最后一行 —— 不要挪到「跑完关掉…」正下方，否则又会被读成子选项。
-        t_autosave = W.Toggle(right, "自动保存工程", self.var_save_before_close)
-        t_autosave.grid(row=2, column=0, sticky="w")
-        W.Tip(t_autosave, "勾上后：脚本跑完就在 AE 里保存一次（等同按 Ctrl+S），\n"
-                          "不管这次 AE 关不关 —— 你在 AE 里手动改的东西也会一起存下来。\n"
-                          "工程如果还没落盘（新建/刚转换），会跳过并记一条日志，不会弹「另存为」。")
-
         W.Tip(t_close_existing, "勾上后：点「开始修复」时如果发现你已开着一个 AE，\n"
                               "拾链会先把它关掉、再启动自己的 AE 跑修复。\n"
                               "不勾：检测到 AE 在跑就停下，提示你先手动关掉。")
-        t_save = W.Toggle(left, "跑完保存工程", self.var_save)
-        t_save.grid(row=2, column=0, sticky="w")
-
-        W.Tip(t_save, "跑完在 AE 里按 Ctrl+S 把结果存进工程。取消勾选就只改不存，需自己保存。")
         W.Tip(t_close, "只关这一次由本程序拉起的 AfterFX（按进程号）。\n"
                        "不是本程序启动的 AE 不会被关；检测到已有 AE 会提示先关掉再开始。\n"
                        "取消勾选，AE 跑完留在打开状态，方便看结果。")
@@ -1149,7 +1141,7 @@ class MainWindow(object):
             self.var_consmode.get(), self._cons_on())
         return runner.Options(
             dry=bool(self.var_dry.get()),
-            save=bool(self.var_save.get()),
+            save=not bool(self.var_dry.get()),   # 1.1.29：保存固定开（只体检时不存）
             consolidate=self._cons_on(),
             cons_dir="",
             cons_mode=("move" if mode == "move" else "copy"),
@@ -1157,7 +1149,7 @@ class MainWindow(object):
             close_own_ae=bool(self.auto_close.get()),
             only_missing=bool(only_missing),
             close_existing=bool(self.var_close_existing.get()),
-            save_before_close=bool(self.var_save_before_close.get()),
+            save_before_close=bool(self.auto_close.get()),   # 1.1.29：合并后跟着合并项走
         )
 
     def _ae_exe(self):

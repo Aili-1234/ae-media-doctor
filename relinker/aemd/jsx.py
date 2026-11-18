@@ -84,6 +84,22 @@ MAPPING_JSX_BLOCK = r"""    /* ===== 1.1.0 手工映射表：全名没中时，�
 #: 每条 = (v2 里的片段, v1.9.8 里的原片段)。只允许登记真修过 bug 的地方。
 #: 空串作旧的片段 = 纯新增（v1.9.8 里没有），对拍时直接删掉。
 KNOWN_DIFFS = [
+    # 1.1.18：proj.file 为 null 时 proj.save() 会抛 TypeError → 改成显式 save(new File(...))
+    ("""        /* 1.1.18：工程若是 AE 刚转换出来的（proj.file 为 null），无参 save() 会抛
+           TypeError: null 不是对象 —— 改成显式存回我们要的那份文件。 */
+        if (proj.file){
+            proj.save();
+            L("SAVED     " + dec(proj.file.fsName));
+        } else {
+            proj.save(new File(CFG.project));
+            L("SAVED     " + dec(CFG.project) + "   （工程原来还没落盘，已存回这份）");
+        }""", """        proj.save();
+        L("SAVED     " + dec(proj.file.fsName));"""),
+    # 1.1.16：proj.file 可能为 null（AE 刚把工程转换完、还没落盘）。
+    # 真机 moonligt v2.aep 在 `proj.file.fsName` 上抛 `FATAL TypeError: null 不是对象 line 484`。
+    # 对拍时把这一行还原成 v1.9.8 的写法再比字节。
+    ('L("PROJECT   " + (proj.file ? dec(proj.file.fsName) : "（工程还没落盘，AE 刚转换完）"));',
+     'L("PROJECT   " + dec(proj.file.fsName));'),
     # 2026-11-15 产品改名（AE 素材医生 → 拾链 Relinker 1.0.0）：
     # 只动产品名，不动脚本行为。对拍时把名字还回去再比字节。
     (" * 拾链 生成的重连脚本", " * AE 素材医生 生成的重连脚本"),
@@ -1042,7 +1058,7 @@ try {
     }
 
     L("SCRIPT    拾链 v__APPVER__   AE " + app.version + (CFG.dryRun ? "   [只体检]" : ""));
-    L("PROJECT   " + dec(proj.file.fsName));
+    L("PROJECT   " + (proj.file ? dec(proj.file.fsName) : "（工程还没落盘，AE 刚转换完）"));
     L("ITEMS     " + proj.numItems);
 
     if (loadPyIndex()){
@@ -1074,8 +1090,15 @@ try {
       " missing=" + stats.missing + " ambiguous=" + stats.ambiguous + " zeroByte=" + stats.broken + " mapped=" + stats.mapped);
 
     if (!CFG.dryRun && CFG.save && (stats.fixed > 0 || openedHere)){
-        proj.save();
-        L("SAVED     " + dec(proj.file.fsName));
+        /* 1.1.18：工程若是 AE 刚转换出来的（proj.file 为 null），无参 save() 会抛
+           TypeError: null 不是对象 —— 改成显式存回我们要的那份文件。 */
+        if (proj.file){
+            proj.save();
+            L("SAVED     " + dec(proj.file.fsName));
+        } else {
+            proj.save(new File(CFG.project));
+            L("SAVED     " + dec(CFG.project) + "   （工程原来还没落盘，已存回这份）");
+        }
     } else if (CFG.dryRun){
         L("SKIP-SAVE (只体检)");
     }
