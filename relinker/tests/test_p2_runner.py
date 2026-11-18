@@ -156,6 +156,11 @@ class Ctx(object):
         self.patch(aehost, "_node_check", lambda text: True)
         self.patch(winproc, "terminate_tree", lambda pid, wait=0: True)
         self.patch(subprocess, "Popen", no_popen)
+        # 1.1.12：冷启动判定要看「真 AE 进程在不在」，打桩环境里那个假 pid 只要
+        # 恰好撞上一个活的系统进程，`_cold_start()` 就会真、等待上限被拉长到
+        # COLD_START_WAIT_S，C 项就会偶发「应失败，实际 starting」（实测撞过一次）。
+        # 打桩测试里没有真 AE，直接把它钉成 False。
+        self.patch(runner.Run, "_cold_start", lambda self: False)
         self.patch(aehost, "close_own_ae",
                    lambda pid, reason, log=None, wait=8: self.closed.append((pid, reason)) or True)
         return self
@@ -316,23 +321,38 @@ def _():
 
 # ----------------------------------------------------------------- F. 备份工程（方案甲）
 
-@case("F. 方案甲：默认备份原工程到 _backup.aep，脚本直接修原工程")
+@case("F. 默认（1.1.13）：先复制源工程再改，原件一字节不动")
 def _():
     with Ctx() as ctx:
-        before = os.path.getsize(ctx.project)
+        before = open(ctx.project, "rb").read()
         opt = runner.Options(copy_project=True)
         run = runner.Run(ctx.project, [ctx.material], opt, log=ctx.log,
                          force_mode=aehost.LaunchMode.A2_STARTUP)
         run.start()
-        need(run.backup_path, "没备份")
-        need(os.path.basename(run.backup_path) == "again_backup.aep",
-             "备份名不对：%r" % os.path.basename(run.backup_path))
-        need(os.path.dirname(run.backup_path) == ctx.projdir, "备份位置不对：%r" % run.backup_path)
-        need(os.path.isfile(run.backup_path), "备份文件不存在")
-        # 关键：work 恒等于原工程（脚本直接修它），不是副本
+        need(run.copied_path, "没复制工作副本")
+        need(os.path.basename(run.copied_path) == "again_fixed.aep",
+             "副本名不对：%r" % os.path.basename(run.copied_path))
+        # 夹具在沙箱里是 `again.aep`，副本因此是 `again_fixed.aep`（同目录、不同文件）。
+        need(os.path.dirname(run.copied_path) == ctx.projdir, "副本位置不对：%r" % run.copied_path)
+        need(os.path.isfile(run.copied_path), "副本文件不存在")
+        need(run.work == run.copied_path, "work 应指向副本，实际 %r" % run.work)
+        need(not run.backup_path, "走副本这条路不该再备份")
+        need(open(ctx.project, "rb").read() == before, "原工程被动了（应当一字节不动）")
+
+
+@case("F2. 不勾「先复制」时才直接改原工程，并留 _backup.aep 还原点")
+def _():
+    with Ctx() as ctx:
+        before = os.path.getsize(ctx.project)
+        opt = runner.Options(copy_project=False)
+        run = runner.Run(ctx.project, [ctx.material], opt, log=ctx.log,
+                         force_mode=aehost.LaunchMode.A2_STARTUP)
+        run.start()
+        need(not run.copied_path, "没勾复制却造了副本")
         need(run.work == ctx.project, "work 应指向原工程，实际 %r" % run.work)
-        # 备份只是复制了一份，原工程此刻还没被改（脚本没跑）
-        need(os.path.getsize(ctx.project) == before, "原工程在 prepare 阶段就被动了")
+        need(run.backup_path and os.path.basename(run.backup_path) == "again_backup.aep",
+             "还原点不对：%r" % run.backup_path)
+        need(os.path.getsize(ctx.project) == before, "prepare 阶段就动了原工程")
 
 
 # ----------------------------------------------------------------- G. CLI 退出码
@@ -359,13 +379,13 @@ def _():
 
     # 4：备份失败
     with Ctx() as ctx:
-        ctx.patch(paths, "make_backup", lambda *a, **k: (_ for _ in ()).throw(
-            RuntimeError("备份写不进去")))
+        ctx.patch(paths, "make_work_copy", lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("复制写不进去")))
         run_opt = runner.Options(copy_project=True)
         r = runner.Run(ctx.project, [ctx.material], run_opt, log=ctx.log)
         try:
             r.start()
-            raise AssertionError("备份失败却没抛")
+            raise AssertionError("复制失败却没抛")
         except runner.CopyProjectError:
             pass
 

@@ -162,7 +162,8 @@ class Run(object):
 
         # 下面这些在 start() 里填好
         self.state = State.PENDING
-        self.work = ""             # 脚本要修的工程 —— 方案甲后恒等于原工程（不再有 _fixed 副本）
+        self.work = ""             # 脚本要修的工程：1.1.13 起默认是 **副本**（<名>_fixed.aep）
+        self.copied_path = ""      # 复制出来的工作副本路径（copy_project=True 时才有）
         self.copy_path = ""        # 保留旧字段兼容（已废弃，指向空）
         self.backup_path = ""      # 备份路径（还原点；没备份则空）
         self.state_dir = ""
@@ -228,18 +229,29 @@ class Run(object):
             if self.roots:
                 self.log("SCAN    自动推断素材目录 %d 个" % len(self.roots), "dim")
 
-        # ① 备份原工程（可选）—— 方案甲：修复**直接改用户打开的原工程**，先备份一份当还原点。
-        # 为什么改成"备份"而不是"复制副本再修副本"：用户来找拾链时打开的就是原工程，
-        # 他最想看到的是"我眼前这个工程被治好"；再搞一个 _fixed 副本让用户去开，是多余的心智负担，
-        # 而且手动模式下副本路径跟用户打开的工程对不上（2026-11-17 真机踩到）。
-        # 所以：脚本修的永远是 self.work == 原工程；备份只是还原点，不参与修复。
+        # ① 准备要修的工程（1.1.13 按用户口径改了默认值）：
+        #   · 默认（copy_project=True）→ **先复制源工程**到 `<名>_fixed.aep`，只改副本，原件一字节不动。
+        #     用户原话：「输入源工程位置，自动复制源工程，然后直接在复制工程里打开。这样用户更省心」。
+        #     省心的关键是「万一修坏了也不用找备份」——原件根本没被碰过。
+        #   · 勾掉（copy_project=False，CLI 加 --inplace）→ 直接改原工程，动手前备份 `_backup.aep`。
+        #     这条路留着是因为有人就要「眼前这个工程被治好」，且副本会多占一份体积。
         self.work = self.project
         self.backup_path = ""
-        if self.opt.copy_project and not self.opt.dry:
-            try:
-                self.backup_path = paths.make_backup(self.project, log=self.log)
-            except RuntimeError as e:
-                raise CopyProjectError("备份工程失败：%s" % e)
+        self.copied_path = ""
+        if not self.opt.dry:
+            if self.opt.copy_project:
+                try:
+                    self.copied_path = paths.make_work_copy(self.project, log=self.log)
+                except RuntimeError as e:
+                    raise CopyProjectError("复制工程失败：%s" % e)
+                self.work = self.copied_path
+                self.log("COPY    已复制源工程 → %s（原件不动，修的是这份副本）" % self.work, "ok")
+            else:
+                try:
+                    self.backup_path = paths.make_backup(self.project, log=self.log)
+                except RuntimeError as e:
+                    raise CopyProjectError("备份工程失败：%s" % e)
+                self.log("BACKUP  直接改原工程，已留还原点 → %s" % self.backup_path, "warn")
 
         # ② 路径三件套：工程旁的结果目录、软件自己的日志与临时目录
         out_dir = os.path.dirname(os.path.abspath(self.work))
@@ -674,12 +686,22 @@ class Run(object):
         warnings.extend(self._collect_warns())
         # 1.1.9：提取工程引用的第三方插件 + 缺失插件，写日志 + 塞进结果供界面展示。
         # 让用户不用打开第二遍去比对「这个工程还依赖哪些可能缺失的插件」。
-        tp, missing_plugins = [], []
+        tp, missing_plugins, plugin_map = [], [], []
         try:
-            tp = project_plugins.third_party_of(self.project)
-            missing_plugins = project_plugins.missing_of(self.project)
+            rows = project_plugins.resolution(self.project)
+            tp = [r["name"] for r in rows]
+            missing_plugins = [r["name"] for r in rows if not r["ok"]]
+            plugin_map = rows
         except Exception:
-            tp, missing_plugins = [], []
+            tp, missing_plugins, plugin_map = [], [], []
+        later = [r for r in plugin_map if r["ok"]]
+        if later:
+            # 1.1.12：把「显示名 → 对上哪个文件」写进日志。用户怀疑「明明装了却说没装」
+            # 时，这一行能直接回答；也免得以后只能靠猜。
+            brief = "；".join("%s → %s" % (r["name"], os.path.basename(
+                r["file"]) if r["file"] and not r["file"].startswith("<") else r["file"])
+                for r in later[:10])
+            self.log("PLUGIN-MAP  %s" % brief, "dim")
         if missing_plugins:
             self.log("PLUGIN-MISS 此工程引用的第三方插件缺失 %d 个（AE 里没装）：%s"
                      % (len(missing_plugins), "、".join(missing_plugins)), "warn")
@@ -928,7 +950,7 @@ USAGE = """用法：
 def parse_cli(argv):
     """解析 CLI 参数 → dict。不认识的参数抛 ValueError（退出码 2 的来源）。"""
     out = {"project": "", "projects": [], "dry": False, "save": True, "roots": [], "ae": "",
-           "yes": False, "close_ae": False, "manual": False, "mapping": "",
+           "yes": False, "close_ae": False, "manual": False, "mapping": "", "inplace": False,
            "only_missing": False, "json": False}
     args = list(argv)
     if not args:
@@ -960,6 +982,8 @@ def parse_cli(argv):
             out["manual"] = True
         elif a == "--only-missing":
             out["only_missing"] = True
+        elif a == "--inplace":
+            out["inplace"] = True
         elif a == "--json":
             out["json"] = True
         elif a == "--roots":
@@ -1050,6 +1074,8 @@ def _argv_for(project, opt):
         a.append("--manual")
     if opt.get("only_missing"):
         a.append("--only-missing")
+    if opt.get("inplace"):
+        a.append("--inplace")
     if opt.get("ae"):
         a.extend(["--ae", opt["ae"]])
     if opt.get("mapping"):
@@ -1087,11 +1113,19 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
     # --json：日志一律走 stderr，stdout 只留最后一坨 JSON。
     # 在 parse_cli 之前就分流 —— 参数错也要输出结构化结果，否则调用方拿不到原因。
     as_json = "--json" in argv
+    pybuf = []          # 1.1.13：Python 侧的行（COPY/BACKUP/PLUGIN/SCRIPT…）另存一份，
+    run_ref = []        # 整轮结束时补写进日志文件（日志文件由 JSX 持有句柄）
     if as_json and log is None:
         def emit(msg, tag=None):
             print(msg, file=sys.stderr, flush=True)
     else:
         emit = log or (lambda msg, tag=None: print(msg))
+
+    def _flush_py_log():
+        if not run_ref or not pybuf:
+            return
+        reports.append_block(getattr(run_ref[0], "log_path", ""),
+                             "程序侧（Python）日志", pybuf)
 
     def done(code, error="", extra=None):
         """统一出口：非 --json 时只返回退出码（行为与以前一模一样）。
@@ -1099,6 +1133,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
         `collect` 是给批量用的：每个工程跑完把自己的结果写回那一行，
         免得为了汇总再去解析 stdout。
         """
+        _flush_py_log()
         if collect is not None:
             if error:
                 collect["error"] = error
@@ -1146,7 +1181,8 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
 
     # D3：默认**不关**本次 AE。--close-ae 才关（旧 --yes 的「跑完关」并到这里），
     # 关的仍然只可能是我们自己拉起的那只（aehost.close_own_ae 的白名单）。
-    options = Options(dry=opt["dry"], save=opt["save"], copy_project=not opt["dry"],
+    options = Options(dry=opt["dry"], save=opt["save"],
+                      copy_project=(not opt["dry"]) and (not opt.get("inplace")),
                       close_own_ae=opt["close_ae"], mapping_path=opt["mapping"],
                       only_missing=opt["only_missing"], close_existing=bool(opt["yes"]))
     # t-21：控制台两路输出对齐。控制台其实是两路交织 ——
@@ -1160,6 +1196,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
 
     def plog(msg, tag=None):
         pending.append((msg, tag))
+        pybuf.append(msg)
 
     def flush_pending():
         while pending:
@@ -1168,6 +1205,7 @@ def run_cli(argv, log=None, poll_interval=0.5, max_loop_s=None, collect=None):
 
     run = Run(opt["project"], opt["roots"], options, log=plog, ae_exe=ae_exe,
               force_mode=aehost.LaunchMode.MANUAL if opt["manual"] else None)
+    run_ref.append(run)
 
     # R3：别人的 AE 在跑。--yes 时允许关掉（CLI 才有的显式授权），否则直接 3
     # 例外：--manual（附着模式）时 AE 开着是**正常**的 —— 用户就是自己开着 AE、

@@ -705,10 +705,10 @@ class MainWindow(object):
         t_dry = W.Toggle(left, "只检查，不改工程", self.var_dry)
         t_dry.grid(row=0, column=0, sticky="w")
         W.Tip(t_dry, "只报告，不重连、不保存。想先看缺多少条就勾它。")
-        t_copy = W.Toggle(left, "修复前先备份原工程", self.var_copy)
+        t_copy = W.Toggle(left, "先复制一份再改", self.var_copy)
         t_copy.grid(row=1, column=0, sticky="w")
-        W.Tip(t_copy, "修复直接改你打开的工程，动手前先备份一份 <名>_backup.aep 当还原点。\n"
-                      "备份放在原工程旁边；不勾则直接改、不留备份。")
+        W.Tip(t_copy, "复制一份 <名>_fixed.aep，只在副本上修，原工程一字节不动（推荐）。\n"
+                      "不勾则直接改原工程，动手前留一份 <名>_backup.aep 当还原点。")
 
         # 收编到 Footages：一个下拉说清「做不做 + 怎么做」，不再用「复选框 + 另一个下拉」并列
         crow = tk.Frame(right, bg=T.CARD)
@@ -858,13 +858,22 @@ class MainWindow(object):
         for text, tag in lines:
             body.insert("end", text + "\n", tag)
         body.configure(state="disabled")
-        # 行数自适应：3~10 行，多了也不撑爆窗口（里面还能滚动看）
-        body.configure(height=max(1, min(3, len(lines))))
 
+        # 1.1.13：先让卡片上屏（宽度才是最终宽度），再按**真实折行数**长高。
+        # 旧写法按「逻辑行数」取 min(3, len(lines))，13 个插件名挤成一行后被右侧截断，
+        # 用户看不到后半截（m02895「长度不够可以向下移动名字」）。
         if not self._plugin_card_visible:
             self.plugin_card.pack(fill="x", padx=20, pady=(T.PAD, 0),
                                   before=self.log_card)
             self._plugin_card_visible = True
+        self.plugin_card.update_idletasks()
+        try:
+            disp = body.count("1.0", "end-1c", "displaylines")
+            n = int(disp[0]) if disp else len(lines)
+        except Exception:
+            n = len(lines)
+        body.configure(height=max(1, min(9, n)))
+        self.plugin_card.update_idletasks()
 
     # ⑥ 日志区（标题行放「日志」+ 三颗结果类按钮；右侧是插件栏）
     def _build_block_log(self):

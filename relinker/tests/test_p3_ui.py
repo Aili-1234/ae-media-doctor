@@ -187,7 +187,7 @@ def _():
         need(any("素材收进工程" in str(x) for x in labels),
              "下拉前面应有一句标签说明它是什么：%r" % (labels,))
         # 左列文案（§5 的 2 列排版清单 + 文案精简表）
-        for want in ("只检查", "修复前先备份原工程", "跑完保存工程"):
+        for want in ("只检查", "先复制一份再改", "跑完保存工程"):
             need(any(want in t.lb.cget("text") for t in lt), "缺复选框：%r" % want)
 
 
@@ -594,6 +594,33 @@ def _():
             need(w.lb_batch.cget("text") == "", "停止后批量提示应清掉")
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+@case("Q. 插件卡：名字多时按真实折行数长高，不把名字截掉")
+def _():
+    names = ["BCC Brightness-Contrast", "Bokeh", "Deep Glow", "S_Rays", "S_Glow",
+             "S_DropShadow", "BCC Film Glow OBS", "Shine", "Optical Flares",
+             "BCC Colorize", "S_Flicker", "S_TextureFlux", "S_Glint"]
+    with Win() as w:
+        w._show_plugins([], names)
+        w.root.update()
+        body = w.plugin_body
+        disp = body.count("1.0", "end-1c", "displaylines")
+        n = int(disp[0]) if disp else 0
+        need(n >= 2, "13 个名字应当折成至少 2 行，实际 %d 行" % n)
+        need(int(body.cget("height")) >= n,
+             "卡片高度 %s 行小于真实折行数 %d —— 名字会被截掉"
+             % (body.cget("height"), n))
+        need(int(body.cget("height")) <= 9, "卡片高度上限 9 行，实得 %s" % (body.cget("height"),))
+        need(w.plugin_card.winfo_height() >= 40,
+             "插件卡没上屏（高度 %d）" % w.plugin_card.winfo_height())
+        # 缺失态同一套逻辑
+        w.plugin_card.pack_forget()
+        w._plugin_card_visible = False
+        w._show_plugins(names[:2], names[2:])
+        w.root.update()
+        need("缺失 2 个" == w.lb_plugin_count.cget("text"),
+             "缺失计数不对：%r" % (w.lb_plugin_count.cget("text"),))
 
 
 def main():

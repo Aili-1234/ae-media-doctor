@@ -159,3 +159,26 @@ def find_report(state_dir, out_dir=None, name=const.REPORT_JSON):
         if os.path.isfile(p):
             return p
     return None
+
+def append_block(log_path, title, lines):
+    """把程序侧（Python）的行补写进日志文件末尾。
+
+    为什么需要：日志文件是 JSX 自己写的（`jsx.L()` 开一个句柄整轮占用），而
+    `COPY / BACKUP / PLUGIN / PLUGIN-MAP / SCRIPT` 这些行是 Python 打的、只进控制台
+    （`run_cli` 的 emit）—— 诊断包里看不到护栏动作与「改的是副本还是原件」。
+    做法：整轮结束后由 Python 追加一段，标题明确标出，不与 JSX 行混排。
+    失败不抛：日志写不进去是次要问题，绝不能因此让一次修复失败。
+    """
+    if not log_path or not lines:
+        return False
+    try:
+        d = os.path.dirname(log_path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write("\n=== %s ===\n" % title)
+            for ln in lines:
+                fh.write(str(ln).rstrip("\n") + "\n")
+        return True
+    except Exception:
+        return False
