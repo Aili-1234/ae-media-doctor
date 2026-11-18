@@ -74,6 +74,8 @@ class Toggle(tk.Frame):
         self._draw()
 
     def _click(self, _=None):
+        if not getattr(self, "enabled", True):
+            return
         self.var.set(not self.var.get())
 
     def set(self, v):

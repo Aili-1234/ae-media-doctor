@@ -167,22 +167,28 @@ def _():
         rt = [c for c in flatten(right) if isinstance(c, W.Toggle)]
         # 2026-11-15 文案精简：左列 3 个（只检查 / 先复制 / 跑完保存工程）
         need(len(lt) == 3, "左列应是 3 个 Toggle，实际 %d" % len(lt))
-        # 右列 2 个 Toggle：跑完关 AE + 检测到 AE 在跑时自动关掉再跑（1.1.9 加的那个）
-        need(len(rt) == 2, "右列应 2 个 Toggle（关 AE / 自动关已有 AE），实际 %d" % len(rt))
+        # 右列 2 个 Toggle：跑完关 AE + 检测到 AE 在跑时自动关掉再跑
+        # （「自动保存工程」1.1.20 起已拆成左列独立项，不再从属于关 AE）
+        need(len(rt) == 3, "右列应 3 个 Toggle（关 AE / 自动关已有 AE / 自动保存工程），实际 %d" % len(rt))
         rtexts = [t.lb.cget("text") for t in rt]
         need(any(x.strip() == "跑完关掉本程序启动的 AE" for x in rtexts),
              "右列缺「跑完关掉本程序启动的 AE」：%r" % (rtexts,))
         need(any("检测到 AE 在跑" in x for x in rtexts),
              "右列缺「检测到 AE 在跑时自动关掉再跑」：%r" % (rtexts,))
+        need(any("自动保存" in x for x in rtexts),
+             "右列缺「自动保存工程」：%r" % (rtexts,))
         need(not any("你自己" in x or "你的" in x for x in rtexts),
              "复选框里不许再出现第二人称：%r" % (rtexts,))
         # Footages：一个三态下拉说清「做不做 + 怎么做」
-        combos = [c for c in flatten(right) if isinstance(c, ttk.Combobox)]
-        need(len(combos) == 1, "右列应恰好一个下拉（收编到 Footages），实际 %d" % len(combos))
+        # 1.1.23：下拉不再塞在右列里，而是独占网格最下面一整行（跨两列），
+        # 这样左右两列各 3 个复选框、行号 0/1/2 完全对齐。所以这里在整张网格里找。
+        combos = [c for c in flatten(w.opt_grid) if isinstance(c, ttk.Combobox)]
+        need(len(combos) == 1, "选项区应恰好一个下拉（收进工程），实际 %d" % len(combos))
         values = tuple(combos[0].cget("values"))
         need(values == U.CONS_CHOICES, "收编下拉的选项不对：%r" % (values,))
         need(U.CONS_OFF == "不收进", "三态第一项应能明确表示不收进")
-        labels = [c.cget("text") for c in flatten(right)
+        # 标签和下拉现在同在一个跨列的小容器里（crow），所以从下拉的父容器里找标签
+        labels = [c.cget("text") for c in flatten(combos[0].master)
                   if isinstance(c, tk.Label) and c.cget("text")]
         need(any("素材收进工程" in str(x) for x in labels),
              "下拉前面应有一句标签说明它是什么：%r" % (labels,))
@@ -509,7 +515,7 @@ def _():
                 info = ch.grid_info() or ch.pack_info() or {}
                 if "row" in info:
                     out.append((int(info["row"]), ch))
-            return sorted(out)
+            return sorted(out, key=lambda t: t[0])   # 同一行可能有两个控件，别拿控件比大小
 
         def center_of(widget):
             """控件的垂直中心（相对根窗口）；文本控件按字体 ascent 折算文字中心。"""

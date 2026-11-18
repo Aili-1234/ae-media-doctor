@@ -501,6 +501,17 @@ def press_startup_prompts(pid, seen=None, log=None):
     return n
 
 
+_WARN_TRIES = {}
+
+
+def _warn_tries(hwnd):
+    return _WARN_TRIES.get(hwnd, 0)
+
+
+def _warn_bump(hwnd):
+    _WARN_TRIES[hwnd] = _warn_tries(hwnd) + 1
+
+
 #: 陌生模态框一轮最多按几个。认识的框（崩溃修复 / 缺素材 / 进度框）各有专线，
 #: 这里只管"其余有标题的 #32770"，额度给小 —— 按多了反而容易踩到不该动的框。
 UNKNOWN_DIALOG_MAX = 2
@@ -612,6 +623,47 @@ def dismiss_progress_dialogs(pid, seen=None, log=None):
             extra = ("（框内文字：%s）" % " / ".join(texts)) if texts else ""
             log("A2      AE 卡在「%s」进度框上，已按回车让它过去%s"
                 % (w.get("title") or "", extra), "dim")
+    return n
+
+
+def dismiss_warning_dialogs(pid, seen=None, log=None):
+    """运行期把 AE 的空标题警告框按掉（典型：「上次保存此项目之后，N 个文件丢失」）。
+
+    为什么需要：这个框是 AE 在**打开工程那一刻**弹的，把 `app.open()` 卡死 ——
+    脚本一个字都写不出来，用户在批量跑的时候只看到"AE 开着但不动"。
+    2026-11-18 真机（cb.aep / moonligt v2.aep）就是这个框把整轮跑挂掉的。
+
+    与「崩溃修复选项」的区别只在日志措辞与额度；按键方式一致（真实回车优先）。
+    **不做固定坐标点鼠标**：这个框的「确定」位置随文字长度变，按坐标点容易点空。
+    """
+    emit = log or (lambda s, tag=None: None)
+    if not pid:
+        return 0
+    booked = seen if seen is not None else set()
+    n = 0
+    # 两类框一起按：标题为空的（崩溃修复 / N 个文件丢失）+ 标题「After Effects」的
+    # （2026-11-18 用户截图：「此项目包含缺少效果的参考…缺少 2 个效果」—— 有标题，
+    #  只认空标题的话永远不会被点掉，AE 就停在那儿等）。
+    cands = list(winproc.warning_dialogs(pid)) + list(winproc.titled_dialogs(pid))
+    for w in cands:
+        if n >= const.A2_WARNING_ENTER_MAX:
+            break
+        hwnd = w.get("hwnd")
+        if not hwnd or hwnd in booked:
+            continue
+        if _warn_tries(hwnd) >= _PRESS_MAX_PER_WINDOW:
+            continue
+        booked.add(hwnd)
+        _warn_bump(hwnd)
+        ok = winproc.press_ok(hwnd)          # 按钮 BM_CLICK 比回车稳（真机回车点不动）
+        gone = ok and not winproc.still_open(hwnd)
+        if gone:
+            _t = str(w.get("title") or "").strip()
+            emit("WARN    AE 弹了个警告框（%s），已按回车确认，继续跑"
+                 % (_t or "标题为空，常见的「上次保存后 N 个文件丢失」/「缺少 N 个效果」"), "dim")
+            n += 1
+        elif ok:
+            emit("WARN    AE 的警告框还在（回车没点动），下一拍再试", "dim")
     return n
 
 
@@ -847,7 +899,114 @@ def ensure_ready(installs, log=None, force_mode=None, jsx_path=None, token=None)
     return LaunchMode.MANUAL, LaunchResult(LaunchMode.MANUAL, ae_exe, None, fallback_from)
 
 
-def close_own_ae(pid, reason, log=None, wait=8, force=False):
+def _is_saveas(title):
+    """这个对话框是不是「另存为」—— 必须人给文件名，自动点只会把 AE 挂住。"""
+    t = str(title or "")
+    return ("另存为" in t) or ("Save As" in t)
+
+
+def save_open_project(pid, log=None, wait=1.6):
+    """在 AE 里保存一次当前工程（等同按 Ctrl+S）——1.1.20 B 方案，1.1.21 修到真能用。
+
+    1.1.20 实测没生效：runner 到这里时 AE 主窗可能不是前台（我们刚跑完脚本、
+    弹过「保存项目」框），`send_ctrl_s` 抢不到前台就直接 False，日志里什么都没留下。
+    1.1.21 三处改动：① 主窗找不到就退一步用任意可见窗口（弹框期间主窗可能被禁）；
+    ② 抢前台前先 ShowWindow(SW_RESTORE)，最多试 3 次、每次间隔 250ms；
+    ③ 每个失败分支都写日志 —— 失败也必须能在日志里看到原因，不许静默返回。
+    边界（真机踩过）：工程没落盘时 Ctrl+S 会弹「另存为」，那个框必须人给文件名，
+    这里按 Esc 取消并落日志，绝不硬点。
+    """
+    emit = log or (lambda s, tag=None: None)
+    try:
+        w = winproc.main_window(pid)
+        if not w:
+            for cand in winproc.windows_of(pid) or []:
+                if cand.get("visible"):
+                    w = cand
+                    break
+        if not w:
+            emit("SAVE    找不到 AE 窗口，跳过自动保存（AE 可能已经退出）", "warn")
+            return False
+        hwnd = w.get("hwnd")
+        ok = False
+        for i in range(3):
+            ok = winproc.send_ctrl_s(hwnd)
+            if ok:
+                break
+            time.sleep(0.25)
+        if not ok:
+            emit("SAVE    抢不到 AE 前台，这次没能替你保存（手动按一次 Ctrl+S 即可）", "warn")
+            return False
+    except Exception as exc:
+        emit("SAVE    自动保存出错：%s" % (exc,), "warn")
+        return False
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        try:
+            dialogs = winproc.warning_dialogs(pid)
+        except Exception:
+            dialogs = []
+        for d in dialogs:
+            if _is_saveas(d.get("title")):
+                winproc.press_esc(d.get("hwnd"))
+                emit("SAVE    工程还没落盘（新建 / 刚转换），跳过自动保存；要存请自己在 AE 里另存一次", "warn")
+                return False
+        if not dialogs:
+            break
+        time.sleep(0.15)
+    emit("SAVE    已在 AE 里保存一次工程（自动保存工程）", "dim")
+    return True
+
+
+def _save_then_close(pid, wait=8.0, log=None):
+    """先 Ctrl+S 存盘，再 WM_CLOSE；关闭途中若弹「是否保存」→ 按回车选「保存」。
+
+    返回 (是否已退出, 是否是靠保存提示过的)。
+    为什么要有这一步：AE 转换工程 / 有未保存改动时，关闭会弹 Drover 自绘的
+    「是否保存对××的更改？」——拿不到按钮句柄，只能回车（默认就是「保存」）。
+    真机（2026-11-18，cb.aep）就是因为这个框把关闭卡住、最后只能强杀。
+    """
+    emit = log or (lambda s, tag=None: None)
+    saved = False
+    prompts = 0
+    # 1.1.17（真机 moonligt v2）：**不主动按 Ctrl+S**。
+    # 工程若还没落盘（AE 刚转换完的新工程），Ctrl+S 会弹 Windows「另存为」框，
+    # 那个框必须人来给文件名，自动点只会把 AE 挂在那里 —— 上一次就是这么卡住的。
+    # 我们的脚本自己已经 SAVED 过副本，所以「关闭时遇到是否保存 → 选保存」足够。
+    try:
+        w = winproc.main_window(pid)
+        if not w:
+            # 拿不到主窗口（无界面 / 打桩环境）→ 退回原来的 taskkill 路径，行为与旧版一致
+            return winproc.terminate_tree(pid, wait=wait), False
+        winproc.post_close(w.get("hwnd"))
+    except Exception:
+        return winproc.terminate_tree(pid, wait=wait), False
+    t0 = time.time()
+    while time.time() - t0 < wait:
+        if not winproc.is_alive(pid):
+            return True, prompts > 0
+        # 关闭过程中弹出来的框（标题为空 / 有标题都算）
+        for w in winproc.warning_dialogs(pid):
+            if prompts >= 3:
+                break
+            if _is_saveas(w.get("title")):
+                # 「另存为」必须人来给名字：按 Esc 取消它，然后继续关
+                if winproc.press_esc(w.get("hwnd")):
+                    prompts += 1
+                    emit("SAVE    关闭时 AE 弹出「另存为」，已按 Esc 取消（工程文件用脚本已存的副本）", "dim")
+                    time.sleep(0.4)
+                continue
+            if winproc.press_enter(w.get("hwnd")):
+                prompts += 1
+                time.sleep(0.5)
+                if not winproc.still_open(w.get("hwnd")):
+                    emit("SAVE    关闭时 AE 问「是否保存」，已按回车选「保存」", "dim")
+                    break
+        time.sleep(0.3)
+    return (not winproc.is_alive(pid)), prompts > 0
+
+
+def close_own_ae(pid, reason, log=None, wait=8, force=False, save=True):
     """**全库唯一的关 AE 入口**（R1/R2/§8）。
 
     只关自己拉起的那个 pid：不在 `_OWN_PIDS` 里的一律拒绝（写 SKIP 行、返回 False）。
@@ -860,7 +1019,20 @@ def close_own_ae(pid, reason, log=None, wait=8, force=False):
         emit("SKIP     检测到 AE PID %s（不是本次拉起的），不关闭" % pid, "warn")
         return False
     try:
-        ok = (winproc.kill_tree(pid, wait=wait) if force else winproc.terminate_tree(pid, wait=wait))
+        if force:
+            ok = winproc.kill_tree(pid, wait=wait)
+        elif not save:
+            ok = winproc.terminate_tree(pid, wait=wait)
+        else:
+            ok, asked = _save_then_close(pid, wait=wait, log=emit)
+            if not ok:
+                # 保存提示没过去，宁可留着 AE 也不强杀（强杀会丢用户改动）
+                ok2 = winproc.terminate_tree(pid, wait=2.0)
+                if not ok2:
+                    emit("CLOSE    AE PID %s 没关掉（多半卡在「是否保存」框上）——"
+                         "已留存，不强杀，以免丢掉未保存的改动。请手动关掉 AE。" % pid, "bad")
+                    return False
+                ok = ok2
     except Exception as e:
         emit("CLOSE    关闭 AE PID %s 失败：%s" % (pid, e), "bad")
         return False

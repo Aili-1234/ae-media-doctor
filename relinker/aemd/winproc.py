@@ -298,6 +298,41 @@ def startup_dialogs(pid):
     return out
 
 
+def titled_dialogs(pid, titles=("After Effects",)):
+    """按标题取 `#32770` 对话框（AE 有些警告框是有标题的，比如「缺少效果」那个）。
+
+    `warning_dialogs` 只认标题为空的框（崩溃修复 / 文件丢失）；但「此项目包含缺少
+    效果的参考」这一类，标题就是 `After Effects`，光按空标题永远抓不到它。
+    """
+    want = tuple(t.lower() for t in (titles or ()))
+    out = []
+    for w in windows_of(pid):
+        if not w.get("visible") or w.get("cls") != "#32770":
+            continue
+        if str(w.get("title") or "").strip().lower() in want:
+            out.append(w)
+    return out
+
+
+def warning_dialogs(pid):
+    """AE 运行期**标题为空**的 #32770：最常见的就是「上次保存此项目之后，N 个文件丢失」。
+
+    这类框是 AE 自绘（DroverLord），子控件只有 OS_ViewContainer / OS_EditTextContainer，
+    **拿不到文字**，所以只能按「出现时机」区分语义：
+      · 主窗口还没出来时的空标题框 = 「崩溃修复选项」（按「继续」，见 startup_dialogs）
+      · 主窗口已经在跑、又冒出空标题框 = 运行期警告（按回车 = 点唯一的「确定」）
+    两边的处置都是"确认通过"，所以共用 press_enter 是安全的；危险按钮（安全模式 /
+    重置首选项 / 搜索 / 取消）都不在空标题框里。
+    """
+    out = []
+    for w in windows_of(pid):
+        if not w["visible"] or (w.get("cls") or "") != "#32770":
+            continue
+        if not (w.get("title") or "").strip():
+            out.append(w)
+    return out
+
+
 def progress_dialogs(pid, titles):
     """AE 启动期**有标题**的 #32770 进度框（「解析字体」「打开项目」…）。
 
@@ -494,6 +529,75 @@ def dialog_child_texts(hwnd, limit=8):
     return out[:limit]
 
 
+def press_ok(hwnd):
+    """点对话框的「确定 / OK」——比按回车稳。
+
+    为什么加：真机上「缺少 N 个效果」这个框（标题 `After Effects`、类 `#32770`）
+    按回车点不动（日志里连出「回车没点动」），但它是标准的 Win32 按钮，直接
+    `BM_CLICK` 一定生效。顺序：找到按钮发 BM_CLICK → 找不到就发 IDOK → 最后才回车。
+    """
+    if not hwnd:
+        return False
+    u = ctypes.windll.user32
+    WANT = ("确定", "ok", "OK", "是", "继续", "close", "关闭")
+    found = []
+
+    def _cb(child, _lp):
+        try:
+            n = u.GetWindowTextLengthW(child)
+            if n:
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(child, buf, n + 1)
+                if str(buf.value).strip() in WANT:
+                    found.append(child)
+                    return False
+        except Exception:
+            pass
+        return True
+
+    try:
+        u.EnumChildWindows(wt.HWND(hwnd), _cb, 0)
+    except Exception:
+        pass
+    for btn in found:
+        try:
+            u.SendMessageW(wt.HWND(btn), 0x00F5, 0, 0)      # BM_CLICK
+            time.sleep(0.15)
+            if not still_open(hwnd):
+                return True
+        except Exception:
+            pass
+    try:
+        u.PostMessageW(wt.HWND(hwnd), 0x0111, 1, 0)          # WM_COMMAND / IDOK
+        time.sleep(0.15)
+        if not still_open(hwnd):
+            return True
+    except Exception:
+        pass
+    return press_enter(hwnd)
+
+
+def press_esc(hwnd):
+    """给某个窗口发 Esc（用来取消「另存为」这类必须人给名字的对话框）。
+
+    复用 press_enter 的后台激活逻辑：先 SetForegroundWindow，抢不到前台就发
+    WM_KEYDOWN 到该窗口（模态框自己在前台，通常接得住）。
+    """
+    try:
+        if not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.12)
+        VK_ESCAPE, KEYEVENTF_KEYUP = 0x1B, 0x0002
+        user32.keybd_event(VK_ESCAPE, 0, 0, 0)
+        time.sleep(0.05)
+        user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP, 0)
+        return True
+    except Exception:
+        return False
+
+
 def press_enter(hwnd):
     """给窗口按一次回车（默认焦点在「继续」上，回车 = 点它，不会误触「安全模式/重置首选项」）。
 
@@ -620,6 +724,68 @@ def still_open(hwnd, timeout_ms=900):
             return False
         r = ctypes.c_size_t(0)
         u.SendMessageTimeoutW(wt.HWND(hwnd), 0x0000, 0, 0, 0x0002, int(timeout_ms), ctypes.byref(r))
+        return True
+    except Exception:
+        return False
+
+
+def force_foreground(hwnd, tries=3, wait=0.25):
+    """把窗口硬拽到前台（`SetForegroundWindow` 常被 Windows 静默拒绝）。
+
+    做法：`AttachThreadInput` 把自己挂到当前前台线程的输入队列上再抢，抢完立刻摘下
+    —— 这是自动化里通用的一招。抢不到就老实返回 False，绝不假装成功。
+    """
+    if not hwnd:
+        return False
+    u = ctypes.windll.user32
+    k = ctypes.windll.kernel32
+    try:
+        u.ShowWindow(hwnd, 9)                      # SW_RESTORE
+    except Exception:
+        pass
+    for _ in range(max(1, tries)):
+        try:
+            if u.GetForegroundWindow() == hwnd:
+                return True
+            fg = u.GetForegroundWindow()
+            tid_fg = u.GetWindowThreadProcessId(fg, None)
+            tid_me = k.GetCurrentThreadId()
+            attached = False
+            if tid_fg and tid_fg != tid_me:
+                attached = bool(u.AttachThreadInput(tid_me, tid_fg, True))
+            u.BringWindowToTop(hwnd)
+            u.SetForegroundWindow(hwnd)
+            u.SetActiveWindow(hwnd)
+            if attached:
+                u.AttachThreadInput(tid_me, tid_fg, False)
+            if u.GetForegroundWindow() == hwnd:
+                return True
+        except Exception:
+            pass
+        time.sleep(wait)
+    return False
+
+
+def send_ctrl_s(hwnd):
+    """给窗口发一次真实的 Ctrl+S（先抢前台；抢不到就返回 False，绝不乱按键）。
+
+    关 AE 之前先存一次：AE 有未保存改动时，WM_CLOSE 会弹「是否保存」，
+    那个框是自绘的、拿不到按钮句柄；先存好，关闭时就不会问。
+    """
+    if not hwnd:
+        return False
+    try:
+        if not force_foreground(hwnd):
+            return False
+        VK_CONTROL, VK_S = 0x11, 0x53
+        KEYEVENTF_KEYUP = 0x0002
+        keybd_event(VK_CONTROL, 0, 0, 0)
+        time.sleep(0.05)
+        keybd_event(VK_S, 0, 0, 0)
+        time.sleep(0.05)
+        keybd_event(VK_S, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.05)
+        keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
         return True
     except Exception:
         return False

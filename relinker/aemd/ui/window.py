@@ -701,6 +701,8 @@ class MainWindow(object):
         self.var_save = tk.BooleanVar(value=bool(self.cfg.get("save_project", True)))
         self.auto_close = tk.BooleanVar(value=bool(self.cfg.get("close_ae", False)))
         self.var_close_existing = tk.BooleanVar(value=bool(self.cfg.get("close_existing", False)))
+        # 1.1.17（用户要求）：关 AE 前先保存工程 —— 让用户自己决定要不要这一步
+        self.var_save_before_close = tk.BooleanVar(value=bool(self.cfg.get("save_before_close", True)))
 
         t_dry = W.Toggle(left, "只检查，不改工程", self.var_dry)
         t_dry.grid(row=0, column=0, sticky="w")
@@ -711,8 +713,9 @@ class MainWindow(object):
                       "不勾则直接改原工程，动手前留一份 <名>_backup.aep 当还原点。")
 
         # 收编到 Footages：一个下拉说清「做不做 + 怎么做」，不再用「复选框 + 另一个下拉」并列
-        crow = tk.Frame(right, bg=T.CARD)
-        crow.grid(row=0, column=0, sticky="w")
+        # 1.1.23：下拉独占最下面一整行（跨两列），这样左右两列各 3 个复选框、行号 0/1/2 完全对齐
+        crow = tk.Frame(self.opt_grid, bg=T.CARD)
+        crow.grid(row=3, column=0, columnspan=2, sticky="w", pady=(T.PAD, 0))
         tk.Label(crow, text=CONS_LABEL, bg=T.CARD, fg=T.FG,
                  font=T.FONT).pack(side="left")
         self.cb_cons = ttk.Combobox(crow, textvariable=self.var_consmode, width=24,
@@ -722,14 +725,23 @@ class MainWindow(object):
                             "复制：Footages 里多一份（安全，占空间）。\n"
                             "移进：复制后确认大小一致，再删原文件（省空间，不能撤销）。")
         t_close = W.Toggle(right, "跑完关掉本程序启动的 AE", self.auto_close)
-        t_close.grid(row=1, column=0, sticky="w")
+        t_close.grid(row=0, column=0, sticky="w")
         t_close_existing = W.Toggle(right, "检测到 AE 在跑时，自动关掉再跑", self.var_close_existing)
-        t_close_existing.grid(row=2, column=0, sticky="w")
+        t_close_existing.grid(row=1, column=0, sticky="w")
+        # 1.1.23（用户要两列各三项、对称为止）：自动保存是独立能力，跟关不关 AE 无关，
+        # 排在右列最后一行 —— 不要挪到「跑完关掉…」正下方，否则又会被读成子选项。
+        t_autosave = W.Toggle(right, "自动保存工程", self.var_save_before_close)
+        t_autosave.grid(row=2, column=0, sticky="w")
+        W.Tip(t_autosave, "勾上后：脚本跑完就在 AE 里保存一次（等同按 Ctrl+S），\n"
+                          "不管这次 AE 关不关 —— 你在 AE 里手动改的东西也会一起存下来。\n"
+                          "工程如果还没落盘（新建/刚转换），会跳过并记一条日志，不会弹「另存为」。")
+
         W.Tip(t_close_existing, "勾上后：点「开始修复」时如果发现你已开着一个 AE，\n"
                               "拾链会先把它关掉、再启动自己的 AE 跑修复。\n"
                               "不勾：检测到 AE 在跑就停下，提示你先手动关掉。")
         t_save = W.Toggle(left, "跑完保存工程", self.var_save)
         t_save.grid(row=2, column=0, sticky="w")
+
         W.Tip(t_save, "跑完在 AE 里按 Ctrl+S 把结果存进工程。取消勾选就只改不存，需自己保存。")
         W.Tip(t_close, "只关这一次由本程序拉起的 AfterFX（按进程号）。\n"
                        "不是本程序启动的 AE 不会被关；检测到已有 AE 会提示先关掉再开始。\n"
@@ -1005,6 +1017,7 @@ class MainWindow(object):
                 self.var_consmode.get(), self._cons_on()),
             "close_ae": bool(self.auto_close.get()),
             "close_existing": bool(self.var_close_existing.get()),
+            "save_before_close": bool(self.var_save_before_close.get()),
             "index_search": bool(self.var_idx.get()),
         }
 
@@ -1144,6 +1157,7 @@ class MainWindow(object):
             close_own_ae=bool(self.auto_close.get()),
             only_missing=bool(only_missing),
             close_existing=bool(self.var_close_existing.get()),
+            save_before_close=bool(self.var_save_before_close.get()),
         )
 
     def _ae_exe(self):
