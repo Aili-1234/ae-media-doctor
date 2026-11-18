@@ -57,7 +57,7 @@ class Options:
     def __init__(self, dry=False, save=True, consolidate=False, cons_dir="",
                  cons_mode="copy", depth=6, copy_project=True, close_own_ae=False,
                  mapping_path="", only_missing=False, warm_open=False, attach=False,
-                 close_existing=False, save_before_close=True):
+                 close_existing=False, save_before_close=True, notify=None):
         self.dry = bool(dry)
         self.save = bool(save)
         self.consolidate = bool(consolidate)
@@ -84,6 +84,9 @@ class Options:
         # 1.1.17：关 AE 之前先按一次 Ctrl+S（并在「是否保存」框上选「保存」）。
         # 默认开：强杀 AE 会丢用户未保存的改动，先存一次是零成本的保险。
         self.save_before_close = bool(save_before_close)
+        # 1.1.47（用户定）：关不掉 AE / 工程没保存过时，要在软件上**弹窗**提醒，
+        # 不能只写日志 —— 用户不会去翻日志。None = 命令行模式，只写日志。
+        self.notify = notify if callable(notify) else (lambda msg: None)
 
 
 class CopyProjectError(RuntimeError):
@@ -346,7 +349,7 @@ class Run(object):
                          % ",".join(str(p) for p in e.pids), "warn")
                 for pid in e.pids:
                     try:
-                        aehost.close_own_ae(pid, "用户勾了自动关闭", log=self.log, wait=6, force=True)
+                        aehost.close_foreign_ae(pid, "用户勾了自动关闭", log=self.log, wait=8)
                     except Exception:
                         pass
                 try:
@@ -357,6 +360,8 @@ class Run(object):
                     self._restore_plugins()
                     self.state = State.BLOCKED
                     self.log("SKIP     关掉后仍有 AE 在跑，本次不启动", "warn")
+                    self.opt.notify("你已经开着一个 AE，我关不掉它，所以这次没有开始修复。\n"
+                                "请手动关掉 AE 再点「开始修复」。")
                     raise
             else:
                 self._restore_plugins()
@@ -868,6 +873,7 @@ class Run(object):
         # 1.1.25（用户定：让脚本自己在结尾存一次）：保存改由 JSX 结尾的 CFG.save 分支负责，
         # 这里不再发键盘 Ctrl+S —— Windows 前台锁让它在命令行下必然失败。
         self._maybe_close_own_ae()
+        self._warn_if_not_saved()
         self._cleanup_startup()
         return Poll(State.DONE, self.elapsed, lines, report=self.report,
                     message=res.summary, status_text=res.summary)
@@ -937,6 +943,26 @@ class Run(object):
             # 在文件里只剩一行 CHK，看不到结局。这里把结局也落进文件，事后能一眼判读。
             _chk(("已关掉 AE PID %s（先存再关）" % pid) if ok else
                  ("没关掉 AE PID %s —— AE 还开着（看上面 DLG-CLOSE / CLOSE-NO）" % pid))
+            if not ok:
+                # 1.1.47（用户定）：关不掉就弹窗，别让人去翻日志。
+                self.opt.notify("跑完了，但没能自动关掉 AE（PID %s）。\n"
+                            "工程已经存过盘，你可以放心手动关掉那个 AE 窗口。" % pid)
+
+    def _warn_if_not_saved(self):
+        """1.1.47（用户定）：工程没保存过（或这次没写盘）→ 弹窗提醒手动存一次。"""
+        if not getattr(self.opt, "save", True) or getattr(self.opt, "dry", False):
+            return
+        try:
+            import io as _io
+            with _io.open(self.log_path, "r", encoding="utf-8", errors="replace") as _f:
+                tail = _f.read()[-4000:]
+        except Exception:
+            return
+        if "SAVED" in tail or "SKIP-SAVE" in tail:
+            return
+        self.log("NOTE    这次没有写出保存记录 —— 工程可能还没保存过（未命名/刚转换）", "warn")
+        self.opt.notify("这次没有保存工程：可能是它还没保存过（新建或刚被 AE 转换）。\n"
+                    "请在 AE 里按一次 Ctrl+S，选个位置存好。")
 
     def _snapshot(self):
         return Poll(self.state, self.elapsed, [], report=self.report,
@@ -979,7 +1005,7 @@ def _as_int(v):
 # ================================================================ CLI
 
 USAGE = """用法：
-  拾链.exe --cli <工程.aep> [更多 .aep 或目录…] [--dry] [--no-save] [--roots 目录1;目录2]
+  复位.exe --cli <工程.aep> [更多 .aep 或目录…] [--dry] [--no-save] [--roots 目录1;目录2]
                               [--ae 2025] [--yes] [--close-ae] [--manual]
                               [--mapping 映射表.json] [--only-missing] [--json]
 
@@ -1055,7 +1081,7 @@ def parse_cli(argv):
         elif a.startswith("-"):
             raise ValueError("不认识的参数：%s" % a)
         else:
-            # 位置参数也当工程收（`拾链 a.aep b.aep`），不再报"只能给一个"
+            # 位置参数也当工程收（`复位 a.aep b.aep`），不再报"只能给一个"
             out["projects"].append(a)
         i += 1
     if not out["projects"]:

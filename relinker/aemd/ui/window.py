@@ -25,7 +25,7 @@
 
 import os
 import tkinter as tk
-from tkinter import filedialog, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .. import cfg as v2cfg
 from .. import const, diag, mapping, paths, reports, runner, updater
@@ -35,7 +35,7 @@ from . import worker
 
 POLL_MS = 400            # 轮询间隔（一次 poll 不 sleep、不阻塞）
 UPDATE_MS = 20000        # R12：每 20 秒比一次 exe 指纹
-DIALOG_TITLE = "拾链"
+DIALOG_TITLE = "复位"
 
 # 素材收进工程的三态文案：一个下拉说清「做不做 + 怎么做」（屏幕上不许有两个并列开关）
 # 2026-11-15 拍板：「收编」→「收进工程」（术语换人话），下拉项不再重复标签前缀
@@ -569,7 +569,7 @@ class MainWindow(object):
         self.btn_batch = W.flat_button(head, "批量…", self.open_batch)
         self.btn_batch.pack(side="right", padx=(0, 8))
         W.Tip(self.btn_batch, "一次修很多工程：列个队，一行一个，按顺序跑。\n"
-                              "每一项都是独立的拾链进程，互不影响；队列会记住，下次打开还在。")
+                              "每一项都是独立的复位进程，互不影响；队列会记住，下次打开还在。")
 
     # ① 工程文件 + AE 版本
     def _build_block_project(self):
@@ -733,7 +733,7 @@ class MainWindow(object):
         # 1.1.23（用户要两列各三项、对称为止）：自动保存是独立能力，跟关不关 AE 无关，
         # 排在右列最后一行 —— 不要挪到「跑完关掉…」正下方，否则又会被读成子选项。
         W.Tip(t_close_existing, "勾上后：点「开始修复」时如果发现你已开着一个 AE，\n"
-                              "拾链会先把它关掉、再启动自己的 AE 跑修复。\n"
+                              "复位会先把它关掉、再启动自己的 AE 跑修复。\n"
                               "不勾：检测到 AE 在跑就停下，提示你先手动关掉。")
         W.Tip(t_close, "只关这一次由本程序拉起的 AfterFX（按进程号）。\n"
                        "不是本程序启动的 AE 不会被关；检测到已有 AE 会提示先关掉再开始。\n"
@@ -1150,6 +1150,8 @@ class MainWindow(object):
             only_missing=bool(only_missing),
             close_existing=bool(self.var_close_existing.get()),
             save_before_close=bool(self.auto_close.get()),   # 1.1.29：合并后跟着合并项走
+            # 1.1.47：需要人看一眼的事（关不掉 / 没保存）→ 走 inbox 回到主线程弹窗
+            notify=lambda m: self.inbox.push(("note", m, "")),
         )
 
     def _ae_exe(self):
@@ -1253,6 +1255,11 @@ class MainWindow(object):
                 if item[1] == "manual":
                     self.log("MANUAL  这次不起 AE：请在 AE 里 File > Scripts > Run Script File 跑 %s"
                              % (self.run_obj.jsx_path if self.run_obj else ""), "dim")
+            elif kind == "note":
+                try:
+                    messagebox.showwarning(const.APP_NAME, item[1], parent=self.root)
+                except Exception:
+                    pass
             elif kind == "start_failed":
                 name, msg = item[1], item[2]
                 if name == "BlockedByForeignAE":

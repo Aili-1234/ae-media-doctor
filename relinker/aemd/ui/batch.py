@@ -73,7 +73,7 @@ class BatchWindow(tk.Toplevel):
         self.btn_stop.pack(side="right")
         self.btn_run = W.flat_button(btns, "开始全部", self.run_all, primary=True)
         self.btn_run.pack(side="right", padx=(0, 8))
-        W.Tip(self.btn_run, "按列表顺序一个一个跑，每项都是独立的拾链进程。\n"
+        W.Tip(self.btn_run, "按列表顺序一个一个跑，每项都是独立的复位进程。\n"
                             "跑的时候不会碰你自己的 AE —— 每项都按单实例规则来。")
 
         body = W.card(self)

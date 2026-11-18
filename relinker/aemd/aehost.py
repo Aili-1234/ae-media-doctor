@@ -978,10 +978,14 @@ def _save_then_close(pid, wait=None, log=None):
             if not clicked:
                 clicked = winproc.press_enter(h)
             if not clicked or winproc.still_open(h):
-                # 1.1.41：关闭阶段默认**不动鼠标**（工程已由脚本存过，关不掉就强杀自己的 PID），
-                # 只有显式打开 const.CLOSE_MOUSE_CLICK 时才去点 —— 避免抢占用户的鼠标。
+                # 1.1.41 曾把这条关掉（怕抢用户的鼠标）；1.1.50（用户要求）恢复：
+                # 键盘点不动的框（AE 自绘的「是否保存」）**仍然要自动点掉**——
+                # 不然一卡住就只剩强杀，AE 里的改动会丢。
                 if const.CLOSE_MOUSE_CLICK:
+                    before = winproc.still_open(h)
                     clicked = winproc.click_dialog_default(h)
+                    if clicked and before:
+                        emit("CLOSE-MOUSE 键盘点不动这个框（%r），已用鼠标点掉，继续关闭" % (_t,), "dim")
             if clicked:
                 prompts += 1
                 time.sleep(0.5)
@@ -1047,6 +1051,41 @@ def close_own_ae(pid, reason, log=None, wait=8, force=False, save=True):
         _wait_vacuum(log)
         return True
     emit("CLOSE    关闭 AE PID %s 未确认（进程可能已退出）" % pid, "warn")
+    return False
+
+
+def close_foreign_ae(pid, reason, log=None, wait=8):
+    """关掉**用户自己开着**的 AE（1.1.46）。
+
+    只在一个前提下允许：用户勾了「检测到 AE 在跑时，自动关掉再跑」。
+    和 close_own_ae 的区别只有一处：不查 `_OWN_PIDS` 白名单 —— 因为那个白名单
+    存在的意义是「不要在我没被允许时碰别人的 AE」，而勾这个框就是那个允许。
+
+    仍然只对 AfterFX.exe 生效（winproc.ae_pids 复核），并走同一套
+    「先 WM_CLOSE → 处理保存框 → 实在不退才硬关」的礼貌流程。
+    """
+    emit = log or (lambda s, tag=None: None)
+    if isinstance(pid, (tuple, list)):
+        pid = pid[0] if pid else None
+    if pid is None:
+        return False
+    live = [p for p, _w in winproc.foreign_ae_pids()]
+    if pid not in live:
+        emit("SKIP     要关的 AE PID %s 已经不在了（可能你自己关了）" % pid, "dim")
+        return True
+    emit("CLOSE    你勾了「检测到 AE 在跑时，自动关掉再跑」，先关掉你开着的 AE PID %s（原因：%s）"
+         % (pid, reason or "未注明"), "warn")
+    try:
+        ok, _asked = _save_then_close(pid, wait=wait, log=emit)
+    except Exception as e:
+        emit("CLOSE    关闭你开着的 AE PID %s 失败：%s" % (pid, e), "bad")
+        return False
+    if ok:
+        _OWN_PIDS.discard(pid)
+        emit("CLOSE    已关掉你开着的 AE PID %s，接着启动我自己的" % pid, "dim")
+        _wait_vacuum(log)
+        return True
+    emit("CLOSE-FAIL  你开着的 AE PID %s 没能关掉（可能卡在对话框里），请手动关一下" % pid, "bad")
     return False
 
 

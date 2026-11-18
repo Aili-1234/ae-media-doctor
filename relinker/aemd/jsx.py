@@ -105,7 +105,7 @@ KNOWN_DIFFS = [
     # 2026-11-15 产品改名（AE 素材医生 → 拾链 Relinker 1.0.0）：
     # 只动产品名，不动脚本行为。对拍时把名字还回去再比字节。
     (" * 拾链 生成的重连脚本", " * AE 素材医生 生成的重连脚本"),
-    ('L("SCRIPT    拾链 v', 'L("SCRIPT    AE 素材医生 v'),
+    ('L("SCRIPT    复位 v', 'L("SCRIPT    AE 素材医生 v'),
     # D5：flush() 之后 L() 再写会写进已关闭的文件（被 catch 吞掉）→ DONE-OK 5/5 缺失
     ("""function L(s){
   /* D5：中途 flush() 会把文件关掉，之后再 L() 就写进一个已关闭的文件、被 catch 静默吞掉
@@ -1072,7 +1072,7 @@ try {
         L("USE-OPEN  " + dec(proj.file.fsName));
     }
 
-    L("SCRIPT    拾链 v__APPVER__   AE " + app.version + (CFG.dryRun ? "   [只体检]" : ""));
+    L("SCRIPT    复位 v__APPVER__   AE " + app.version + (CFG.dryRun ? "   [只体检]" : ""));
     L("PROJECT   " + (proj.file ? dec(proj.file.fsName) : "（工程还没落盘，AE 刚转换完）"));
     L("ITEMS     " + proj.numItems);
 

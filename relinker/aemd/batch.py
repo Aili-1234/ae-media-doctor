@@ -4,7 +4,7 @@
 为什么单独成模块：队列、持久化、子进程调用这三件事都可以在没有界面的情况下测，
 把它们和 Tk 混在一起就只能靠人眼看了。界面（`aemd/ui/batch.py`）只负责显示。
 
-一个任务 = 一个 .aep 的绝对路径。跑法**复用 CLI**（`拾链.exe --cli <aep>`）：
+一个任务 = 一个 .aep 的绝对路径。跑法**复用 CLI**（`复位.exe --cli <aep>`）：
 每项独立进程，互不污染；界面按行解析它的 stdout 得出进度。
 """
 import io
@@ -256,7 +256,7 @@ def summary_line(items):
 
 def write_report(items, path):
     """把整批结果写成一份文本报告（放 logs 目录，用户可整份发出来）。"""
-    lines = ["拾链 批量修复报告", "生成时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"), ""]
+    lines = ["复位 批量修复报告", "生成时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S"), ""]
     for i, it in enumerate(items, 1):
         lines.append("%d. %s" % (i, it.path))
         lines.append("   状态：%s   用时 %.1f 秒   退出码 %s"
